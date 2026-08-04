@@ -4,6 +4,16 @@ Sistema interno para gestão de demandas, pedidos, produção, estoque, compras,
 
 **Assinatura oficial:** Powered by: SER Comunicação Inteligente & Hakham IA
 
+## Versão atual
+
+**v0.2.0 — Estoque e materiais aprimorados**
+
+- Categorias dinâmicas e administráveis.
+- Perfis técnicos para chapas, rolos, tintas e insumos.
+- Gramatura, comprimento de rolo, volume, cor, acabamento e embalagem.
+- SKU automático e exclusão segura.
+- Disponibilidade calculada com reservas.
+
 ## Estado do projeto
 
 Esta entrega corresponde à **V1 Beta funcional**. A estrutura, banco, APIs, telas e regras principais já estão implementados. Antes do uso em produção, a aplicação deve passar por implantação na Cloudflare, aplicação das migrações D1 e testes operacionais com dados reais controlados.
@@ -93,3 +103,9 @@ A criação de um pedido **não baixa o estoque**. O sistema permite planejar e 
 ## Implantação
 
 Consulte [DEPLOY_CLOUDFLARE.md](DEPLOY_CLOUDFLARE.md).
+
+## Atualização 0.3.0
+
+A versão 0.3.0 adiciona cancelamento formal de pedidos, exclusão segura de rascunhos exclusivamente pelo Super Administrador, histórico auditável com PDFs por movimentação, personalização visual por arquivos no R2 e manutenção controlada de dados de teste.
+
+Consulte `docs/ALTERACOES_V0.3_PEDIDOS_PERSONALIZACAO.md`.

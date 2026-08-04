@@ -9,10 +9,11 @@ interface D1Database {
   prepare(query: string): D1PreparedStatement;
   batch<T = unknown>(statements: D1PreparedStatement[]): Promise<D1Result<T>[]>;
 }
-interface R2HTTPMetadata { contentType?: string; }
-interface R2ObjectBody { body: ReadableStream; writeHttpMetadata(headers: Headers): void; }
+interface R2HTTPMetadata { contentType?: string; cacheControl?: string; contentDisposition?: string; }
+interface R2ObjectBody { body: ReadableStream; httpEtag: string; writeHttpMetadata(headers: Headers): void; }
+interface R2PutOptions { httpMetadata?: R2HTTPMetadata; customMetadata?: Record<string, string>; }
 interface R2Bucket {
-  put(key: string, value: ReadableStream | ArrayBuffer | ArrayBufferView | string | null, options?: { httpMetadata?: R2HTTPMetadata }): Promise<unknown>;
+  put(key: string, value: ReadableStream | ArrayBuffer | ArrayBufferView | string | null, options?: R2PutOptions): Promise<unknown>;
   get(key: string): Promise<R2ObjectBody | null>;
   delete(key: string): Promise<void>;
 }

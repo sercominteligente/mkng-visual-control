@@ -1,18 +1,29 @@
-# Atualização MKNG Visual Control v0.2.0
+# Atualização MKNG Visual Control 0.3.0
 
-Extraia o pacote e envie seu conteúdo para a raiz do repositório `sercominteligente/mkng-visual-control`, preservando as pastas.
+## Como enviar ao GitHub
 
-Mensagem de commit recomendada:
+1. Extraia este ZIP no computador.
+2. No repositório `mkng-visual-control`, clique em `Add file` → `Upload files`.
+3. Arraste **o conteúdo extraído**, mantendo as pastas.
+4. Permita a substituição dos arquivos existentes.
+5. Confirme que o arquivo `migrations/0004_orders_branding_maintenance.sql` aparece na lista.
+6. Faça o commit diretamente na branch `main`.
 
-`Implementa categorias dinâmicas e perfis técnicos de materiais`
+Mensagem do commit:
 
-A Cloudflare executará o build automático. O comando de implantação atual aplicará a migração `0003_material_catalog_improvements.sql` antes de publicar o Worker.
+```text
+Implementa cancelamento, PDFs e personalização visual
+```
 
-Após o build verde, testar nesta ordem:
+## Proteções
 
-1. Estoque → Gerenciar categorias.
-2. Criar categoria `Lonas`.
-3. Novo material → perfil `Rolo ou mídia flexível`.
-4. Cadastrar `Lona 280 g`, largura `1600`, comprimento `50`, gramatura `280`, unidade `Rolo`.
-5. Testar exclusão de um material sem histórico.
-6. Testar desativação de um material com histórico operacional.
+- Este pacote não contém `wrangler.jsonc`; o Database ID e o endereço atual não serão alterados.
+- `src/server/auth.ts` preserva o PBKDF2 em 100.000 iterações e adiciona a proteção exclusiva do Super Administrador.
+- A Cloudflare aplicará a migração `0004` automaticamente no próximo build.
+
+## Primeiro teste após o build verde
+
+1. Pressione `Ctrl + F5` no sistema.
+2. Abra um pedido em rascunho e confirme que apenas o Super Administrador vê `Excluir rascunho`.
+3. Abra uma movimentação no histórico e gere o PDF.
+4. Em `Configurações`, envie um logo de teste para o painel.

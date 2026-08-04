@@ -153,3 +153,11 @@ export function requirePermission(permission: string) {
     await next();
   };
 }
+
+export function requireSuperAdmin() {
+  return async (c: Context<AppEnv>, next: Next): Promise<Response | void> => {
+    const user = c.get("user");
+    if (!user || user.role !== "super_admin") return c.json({ error: "Acesso exclusivo do Super Administrador" }, 403);
+    await next();
+  };
+}

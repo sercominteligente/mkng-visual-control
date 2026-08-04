@@ -1,6 +1,6 @@
 import { Hono } from "hono";
-import { authMiddleware, createSession, destroySession, ensureBootstrapAdmin, hashPassword, requirePermission, verifyPassword } from "./server/auth";
-import { buildReportPdf } from "./server/pdf";
+import { authMiddleware, createSession, destroySession, ensureBootstrapAdmin, hashPassword, requirePermission, requireSuperAdmin, verifyPassword } from "./server/auth";
+import { buildOrderPdf, buildReportPdf, type PdfBrand } from "./server/pdf";
 import type { AppEnv } from "./server/types";
 
 const app = new Hono<AppEnv>();
@@ -69,6 +69,85 @@ function materialType(value: unknown): string {
   return ["sheet", "roll", "paint", "general"].includes(candidate) ? candidate : "general";
 }
 
+async function settingsMap(env: AppEnv["Bindings"]): Promise<Record<string, string>> {
+  const result = await env.DB.prepare("SELECT key,value FROM settings").all<{ key: string; value: string }>();
+  return Object.fromEntries(result.results.map((item) => [item.key, item.value ?? ""]));
+}
+
+function publicBranding(settings: Record<string, string>) {
+  return {
+    company_name: settings.company_name || "MKNG Soluções",
+    department_name: settings.department_name || "Setor de Comunicação Visual",
+    powered_by: settings.powered_by || "SER Comunicação Inteligente & Hakham IA",
+    login_title: settings.login_title || "Setor de Comunicação Visual",
+    login_subtitle: settings.login_subtitle || "MKNG Soluções",
+    login_description: settings.login_description || "Sistema interno para controlar demandas, pedidos, produção, chapas, tintas, compras, consumo de materiais e resultados.",
+    primary_color: settings.primary_color || "#ff6a00",
+    accent_color: settings.accent_color || "#8a4dff",
+    sidebar_logo_url: settings.sidebar_logo_key ? `/api/branding/sidebar?v=${encodeURIComponent(settings.sidebar_logo_key)}` : "/mkng-logo.svg",
+    login_logo_url: settings.login_logo_key ? `/api/branding/login?v=${encodeURIComponent(settings.login_logo_key)}` : "",
+    favicon_url: settings.favicon_key ? `/api/branding/favicon?v=${encodeURIComponent(settings.favicon_key)}` : "/favicon.svg",
+  };
+}
+
+async function pdfBrand(env: AppEnv["Bindings"]): Promise<PdfBrand> {
+  const settings = await settingsMap(env);
+  return {
+    companyName: settings.company_name || "MKNG Soluções",
+    departmentName: settings.department_name || "Setor de Comunicação Visual",
+    poweredBy: settings.powered_by || "SER Comunicação Inteligente & Hakham IA",
+    primaryColor: settings.primary_color || "#ff6a00",
+  };
+}
+
+function canViewFinancial(role: string): boolean {
+  return ["super_admin", "admin", "manager", "finance"].includes(role);
+}
+
+async function loadOrderSnapshot(c: any, orderId: string): Promise<any | null> {
+  const order = await c.env.DB.prepare(
+    `SELECT o.*, c.name AS customer_name, u.name AS created_by_name
+       FROM orders o
+       LEFT JOIN customers c ON c.id=o.customer_id
+       LEFT JOIN users u ON u.id=o.created_by
+      WHERE o.id=?`,
+  ).bind(orderId).first<any>();
+  if (!order) return null;
+  const [items, materials, steps] = await Promise.all([
+    c.env.DB.prepare("SELECT * FROM order_items WHERE order_id=? ORDER BY rowid").bind(orderId).all<any>(),
+    c.env.DB.prepare(
+      `SELECT om.*,m.name AS material_name,m.unit,m.current_stock
+         FROM order_materials om JOIN materials m ON m.id=om.material_id
+        WHERE om.order_id=? ORDER BY m.name`,
+    ).bind(orderId).all<any>(),
+    c.env.DB.prepare(
+      `SELECT ps.*,u.name AS assignee_name
+         FROM production_steps ps LEFT JOIN users u ON u.id=ps.assignee_id
+        WHERE ps.order_id=? ORDER BY ps.created_at`,
+    ).bind(orderId).all<any>(),
+  ]);
+  return { order, items: items.results, materials: materials.results, steps: steps.results };
+}
+
+async function recordOrderEvent(c: any, orderId: string, eventType: string, label: string, status?: string | null, notes?: string | null): Promise<string> {
+  const snapshot = await loadOrderSnapshot(c, orderId);
+  if (!snapshot) throw new Error("Pedido não encontrado para registrar histórico");
+  const eventId = id();
+  await c.env.DB.prepare(
+    `INSERT INTO order_events (id,order_id,event_type,label,status,notes,snapshot_json,created_by,created_at)
+     VALUES (?,?,?,?,?,?,?,?,?)`,
+  ).bind(eventId, orderId, eventType, label, status ?? snapshot.order.status ?? null, notes ?? null, JSON.stringify(snapshot), c.get("user")?.id ?? null, now()).run();
+  return eventId;
+}
+
+function brandingSettingKey(slot: string): string | null {
+  return ({ sidebar: "sidebar_logo_key", login: "login_logo_key", favicon: "favicon_key" } as Record<string, string>)[slot] ?? null;
+}
+
+function extensionForMime(mime: string): string {
+  return ({ "image/svg+xml": "svg", "image/png": "png", "image/webp": "webp", "image/jpeg": "jpg", "image/x-icon": "ico" } as Record<string, string>)[mime] ?? "bin";
+}
+
 app.onError((error, c) => {
   console.error(error);
   const message = error instanceof Error ? error.message : "Erro interno";
@@ -77,9 +156,29 @@ app.onError((error, c) => {
 
 app.get("/api/health", (c) => c.json({ ok: true, service: "MKNG Visual Control", at: now() }));
 
+app.get("/api/public/config", async (c) => {
+  const settings = await settingsMap(c.env);
+  return c.json(publicBranding(settings));
+});
+
+app.get("/api/branding/:slot", async (c) => {
+  const settingKey = brandingSettingKey(c.req.param("slot"));
+  if (!settingKey) return c.json({ error: "Identidade visual inválida" }, 404);
+  const settings = await settingsMap(c.env);
+  const objectKey = settings[settingKey];
+  if (!objectKey) return c.json({ error: "Arquivo de identidade visual não configurado" }, 404);
+  const object = await c.env.BUCKET.get(objectKey);
+  if (!object) return c.json({ error: "Arquivo de identidade visual não encontrado" }, 404);
+  const headers = new Headers();
+  object.writeHttpMetadata(headers);
+  headers.set("Cache-Control", "public, max-age=300");
+  headers.set("ETag", object.httpEtag);
+  return new Response(object.body, { headers });
+});
+
 app.use("/api/*", async (c, next) => {
   const path = new URL(c.req.url).pathname;
-  if (path === "/api/health" || path === "/api/auth/login") return next();
+  if (path === "/api/health" || path === "/api/auth/login" || path === "/api/public/config" || path.startsWith("/api/branding/")) return next();
   return authMiddleware(c, next);
 });
 
@@ -561,20 +660,74 @@ app.get("/api/orders", async (c) => {
   return c.json({ items: result.results });
 });
 app.get("/api/orders/:id", async (c) => {
-  const order = await c.env.DB.prepare(
-    `SELECT o.*, c.name AS customer_name FROM orders o LEFT JOIN customers c ON c.id=o.customer_id WHERE o.id=?`,
-  ).bind(c.req.param("id")).first<any>();
-  if (!order) return c.json({ error: "Pedido não encontrado" }, 404);
-  const [items, materials, steps, attachments] = await Promise.all([
-    c.env.DB.prepare("SELECT * FROM order_items WHERE order_id=?").bind(order.id).all<any>(),
+  const orderId = c.req.param("id");
+  const snapshot = await loadOrderSnapshot(c, orderId);
+  if (!snapshot) return c.json({ error: "Pedido não encontrado" }, 404);
+  const [attachments, events, blockers] = await Promise.all([
+    c.env.DB.prepare("SELECT id,filename,mime_type,size_bytes,created_at FROM attachments WHERE entity_type='order' AND entity_id=? ORDER BY created_at DESC").bind(orderId).all<any>(),
     c.env.DB.prepare(
-      `SELECT om.*,m.name AS material_name,m.unit,m.current_stock FROM order_materials om JOIN materials m ON m.id=om.material_id WHERE om.order_id=?`,
-    ).bind(order.id).all<any>(),
-    c.env.DB.prepare("SELECT ps.*,u.name AS assignee_name FROM production_steps ps LEFT JOIN users u ON u.id=ps.assignee_id WHERE ps.order_id=? ORDER BY ps.created_at").bind(order.id).all<any>(),
-    c.env.DB.prepare("SELECT id,filename,mime_type,size_bytes,created_at FROM attachments WHERE entity_type='order' AND entity_id=? ORDER BY created_at DESC").bind(order.id).all<any>(),
+      `SELECT e.id,e.event_type,e.label,e.status,e.notes,e.created_at,u.name AS user_name
+         FROM order_events e LEFT JOIN users u ON u.id=e.created_by
+        WHERE e.order_id=? ORDER BY e.created_at DESC`,
+    ).bind(orderId).all<any>(),
+    c.env.DB.prepare(
+      `SELECT
+         (SELECT COUNT(*) FROM stock_movements WHERE order_id=?) AS movements,
+         (SELECT COUNT(*) FROM receivables WHERE order_id=?) AS receivables`,
+    ).bind(orderId, orderId).first<any>(),
   ]);
-  return c.json({ order, items: items.results, materials: materials.results, steps: steps.results, attachments: attachments.results });
+  const user = c.get("user");
+  return c.json({
+    ...snapshot,
+    attachments: attachments.results,
+    events: events.results,
+    permissions: {
+      canDeleteDraft: user.role === "super_admin" && snapshot.order.status === "draft" && Number(blockers?.movements ?? 0) === 0 && Number(blockers?.receivables ?? 0) === 0,
+      canCancel: ["super_admin", "admin", "manager"].includes(user.role) && !["cancelled", "completed"].includes(snapshot.order.status),
+      canViewFinancial: canViewFinancial(user.role),
+    },
+  });
 });
+
+app.get("/api/orders/:id/pdf", async (c) => {
+  const snapshot = await loadOrderSnapshot(c, c.req.param("id"));
+  if (!snapshot) return c.json({ error: "Pedido não encontrado" }, 404);
+  const pdf = await buildOrderPdf({
+    snapshot,
+    brand: await pdfBrand(c.env),
+    includeFinancial: canViewFinancial(c.get("user").role),
+  });
+  return new Response(pdf as BodyInit, {
+    headers: {
+      "Content-Type": "application/pdf",
+      "Content-Disposition": `inline; filename="${snapshot.order.code || "pedido"}.pdf"`,
+      "Cache-Control": "private, no-store",
+    },
+  });
+});
+
+app.get("/api/orders/:id/events/:eventId/pdf", async (c) => {
+  const event = await c.env.DB.prepare(
+    `SELECT e.*,u.name AS user_name FROM order_events e LEFT JOIN users u ON u.id=e.created_by WHERE e.id=? AND e.order_id=?`,
+  ).bind(c.req.param("eventId"), c.req.param("id")).first<any>();
+  if (!event) return c.json({ error: "Movimentação não encontrada" }, 404);
+  let snapshot: any;
+  try { snapshot = JSON.parse(event.snapshot_json); } catch { return c.json({ error: "Snapshot da movimentação inválido" }, 500); }
+  const pdf = await buildOrderPdf({
+    snapshot,
+    event,
+    brand: await pdfBrand(c.env),
+    includeFinancial: canViewFinancial(c.get("user").role),
+  });
+  return new Response(pdf as BodyInit, {
+    headers: {
+      "Content-Type": "application/pdf",
+      "Content-Disposition": `inline; filename="${snapshot.order?.code || "pedido"}-${event.event_type}.pdf"`,
+      "Cache-Control": "private, no-store",
+    },
+  });
+});
+
 app.post("/api/orders", async (c) => {
   const data = await body<any>(c);
   if (!data.title?.trim()) return c.json({ error: "Título do pedido é obrigatório" }, 400);
@@ -600,15 +753,20 @@ app.post("/api/orders", async (c) => {
   statements.push(c.env.DB.prepare("INSERT INTO production_steps (id,order_id,stage,status) VALUES (?,?,?,?)").bind(id(), orderId, "briefing", "pending"));
   await c.env.DB.batch(statements);
   await audit(c, "create", "order", orderId, data);
+  await recordOrderEvent(c, orderId, "created", "Pedido criado", data.status ?? "draft", data.notes ?? null);
   return c.json({ id: orderId, code: orderCode }, 201);
 });
 app.put("/api/orders/:id", async (c) => {
   const data = await body<any>(c);
   const orderId = c.req.param("id");
+  if (data.status === "cancelled") return c.json({ error: "Use a ação Cancelar pedido e informe o motivo" }, 400);
+  const previous = await c.env.DB.prepare("SELECT status FROM orders WHERE id=?").bind(orderId).first<any>();
+  if (!previous) return c.json({ error: "Pedido não encontrado" }, 404);
   await c.env.DB.prepare(
     `UPDATE orders SET customer_id=?,title=?,description=?,priority=?,status=?,due_date=?,total_price=?,notes=?,updated_at=? WHERE id=?`,
   ).bind(data.customer_id ?? null, data.title, data.description ?? null, data.priority ?? "normal", data.status ?? "draft", data.due_date ?? null, money(data.total_price), data.notes ?? null, now(), orderId).run();
   await audit(c, "update", "order", orderId, data);
+  await recordOrderEvent(c, orderId, previous.status === data.status ? "updated" : "status_changed", previous.status === data.status ? "Dados do pedido atualizados" : `Status alterado para ${data.status}`, data.status ?? "draft", data.notes ?? null);
   return c.json({ ok: true });
 });
 app.post("/api/orders/:id/materials", async (c) => {
@@ -620,6 +778,7 @@ app.post("/api/orders/:id/materials", async (c) => {
      ON CONFLICT(order_id,material_id) DO UPDATE SET planned_qty=excluded.planned_qty,reserved_qty=excluded.reserved_qty,notes=excluded.notes`,
   ).bind(id(), orderId, data.material_id, quantity(data.planned_qty), quantity(data.reserved_qty ?? data.planned_qty), data.notes ?? null).run();
   await audit(c, "plan_material", "order", orderId, data);
+  await recordOrderEvent(c, orderId, "material_planned", "Material planejado ou reservado", null, data.notes ?? null);
   return c.json({ ok: true });
 });
 app.post("/api/orders/:id/consume", async (c) => {
@@ -640,6 +799,7 @@ app.post("/api/orders/:id/consume", async (c) => {
     ).bind(id(), data.material_id, "consumption", -qty, money(material.average_cost), -money(qty * material.average_cost), orderId, data.notes ?? `Consumo confirmado no ${order.code}`, c.get("user").id),
   ]);
   await audit(c, "consume_material", "order", orderId, { material_id: data.material_id, quantity: qty, newStock });
+  await recordOrderEvent(c, orderId, "material_consumed", `Consumo confirmado: ${material.name}`, order.status, `${qty} unidade(s). ${data.notes ?? ""}`.trim());
   return c.json({ ok: true, newStock });
 });
 app.post("/api/orders/:id/return", async (c) => {
@@ -660,6 +820,7 @@ app.post("/api/orders/:id/return", async (c) => {
     ).bind(id(), data.material_id, "return", qty, money(material.average_cost), money(qty * material.average_cost), orderId, data.notes ?? "Devolução de sobra", c.get("user").id),
   ]);
   await audit(c, "return_material", "order", orderId, { material_id: data.material_id, quantity: qty, newStock });
+  await recordOrderEvent(c, orderId, "material_returned", `Material devolvido: ${material.name}`, null, `${qty} unidade(s). ${data.notes ?? ""}`.trim());
   return c.json({ ok: true, newStock });
 });
 app.post("/api/orders/:id/stage", async (c) => {
@@ -678,14 +839,50 @@ app.post("/api/orders/:id/stage", async (c) => {
       .bind(orderStatus, now(), stage, now(), now(), orderId),
   ]);
   await audit(c, "change_stage", "order", orderId, data);
+  await recordOrderEvent(c, orderId, "stage_changed", `Etapa de produção: ${stage}`, orderStatus, data.notes ?? null);
   return c.json({ ok: true, status: orderStatus });
 });
-app.delete("/api/orders/:id", async (c) => {
+app.post("/api/orders/:id/cancel", async (c) => {
+  if (!["super_admin", "admin", "manager"].includes(c.get("user").role)) return c.json({ error: "Somente Super Administrador, Administrador ou Gestor podem cancelar pedidos" }, 403);
   const orderId = c.req.param("id");
-  const movement = await c.env.DB.prepare("SELECT COUNT(*) AS total FROM stock_movements WHERE order_id=?").bind(orderId).first<any>();
-  if ((movement?.total ?? 0) > 0) return c.json({ error: "Pedido possui consumo de estoque; cancele-o em vez de excluir" }, 409);
-  await c.env.DB.prepare("DELETE FROM orders WHERE id=?").bind(orderId).run();
-  await audit(c, "delete", "order", orderId);
+  const data = await body<{ reason?: string }>(c);
+  const reason = data.reason?.trim();
+  if (!reason) return c.json({ error: "Informe o motivo do cancelamento" }, 400);
+  const order = await c.env.DB.prepare("SELECT id,code,status FROM orders WHERE id=?").bind(orderId).first<any>();
+  if (!order) return c.json({ error: "Pedido não encontrado" }, 404);
+  if (order.status === "cancelled") return c.json({ error: "Pedido já está cancelado" }, 409);
+  if (order.status === "completed") return c.json({ error: "Pedido concluído não pode ser cancelado; registre uma ocorrência administrativa" }, 409);
+  await c.env.DB.batch([
+    c.env.DB.prepare("UPDATE orders SET status='cancelled',cancellation_reason=?,cancelled_at=?,cancelled_by=?,updated_at=? WHERE id=?").bind(reason, now(), c.get("user").id, now(), orderId),
+    c.env.DB.prepare("UPDATE order_materials SET reserved_qty=0 WHERE order_id=?").bind(orderId),
+    c.env.DB.prepare("UPDATE production_steps SET status='cancelled',completed_at=COALESCE(completed_at,?) WHERE order_id=? AND status IN ('pending','in_progress')").bind(now(), orderId),
+    c.env.DB.prepare("UPDATE receivables SET status='cancelled',notes=TRIM(COALESCE(notes,'') || ' | Pedido cancelado: ' || ?),updated_at=? WHERE order_id=? AND status IN ('pending','overdue','draft')").bind(reason, now(), orderId),
+  ]);
+  await audit(c, "cancel", "order", orderId, { reason });
+  await recordOrderEvent(c, orderId, "cancelled", "Pedido cancelado", "cancelled", reason);
+  return c.json({ ok: true });
+});
+
+app.delete("/api/orders/:id", requireSuperAdmin(), async (c) => {
+  const orderId = c.req.param("id");
+  const order = await c.env.DB.prepare("SELECT id,code,status FROM orders WHERE id=?").bind(orderId).first<any>();
+  if (!order) return c.json({ error: "Pedido não encontrado" }, 404);
+  if (order.status !== "draft") return c.json({ error: "Somente rascunhos podem ser excluídos definitivamente" }, 409);
+  const blockers = await c.env.DB.prepare(
+    `SELECT
+      (SELECT COUNT(*) FROM stock_movements WHERE order_id=?) AS movements,
+      (SELECT COUNT(*) FROM receivables WHERE order_id=?) AS receivables`,
+  ).bind(orderId, orderId).first<any>();
+  if (Number(blockers?.movements ?? 0) > 0 || Number(blockers?.receivables ?? 0) > 0) {
+    return c.json({ error: "Rascunho possui movimentação ou lançamento financeiro e não pode ser apagado" }, 409);
+  }
+  const attachments = await c.env.DB.prepare("SELECT r2_key FROM attachments WHERE entity_type='order' AND entity_id=?").bind(orderId).all<any>();
+  for (const item of attachments.results) await c.env.BUCKET.delete(item.r2_key);
+  await c.env.DB.batch([
+    c.env.DB.prepare("DELETE FROM attachments WHERE entity_type='order' AND entity_id=?").bind(orderId),
+    c.env.DB.prepare("DELETE FROM orders WHERE id=?").bind(orderId),
+  ]);
+  await audit(c, "delete_draft", "order", orderId, { code: order.code });
   return c.json({ ok: true });
 });
 
@@ -760,16 +957,126 @@ app.use("/api/settings", requirePermission("settings"));
 app.use("/api/settings/*", requirePermission("settings"));
 app.get("/api/settings", async (c) => {
   const result = await c.env.DB.prepare("SELECT key,value,updated_at FROM settings ORDER BY key").all<any>();
-  return c.json({ items: result.results });
+  return c.json({ items: result.results, role: c.get("user").role });
 });
 app.put("/api/settings", async (c) => {
-  const data = await body<Record<string, unknown>>(c);
+  const received = await body<Record<string, unknown>>(c);
+  const generalKeys = ["company_name", "department_name", "currency", "timezone", "order_prefix", "purchase_prefix"];
+  const identityKeys = ["login_title", "login_subtitle", "login_description", "primary_color", "accent_color"];
+  const allowed = c.get("user").role === "super_admin" ? [...generalKeys, ...identityKeys] : generalKeys;
+  const data = Object.fromEntries(Object.entries(received).filter(([key]) => allowed.includes(key)));
+  // A assinatura técnica é protegida e não pode ser removida pela interface.
+  data.powered_by = "SER Comunicação Inteligente & Hakham IA";
   const statements = Object.entries(data).map(([key, value]) => c.env.DB.prepare(
     "INSERT INTO settings (key,value,updated_at) VALUES (?,?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at",
   ).bind(key, String(value ?? ""), now()));
   if (statements.length) await c.env.DB.batch(statements);
   await audit(c, "update", "settings", undefined, data);
+  return c.json({ ok: true, config: publicBranding(await settingsMap(c.env)) });
+});
+
+app.post("/api/settings/branding/:slot", requireSuperAdmin(), async (c) => {
+  const slot = c.req.param("slot");
+  const settingKey = brandingSettingKey(slot);
+  if (!settingKey) return c.json({ error: "Tipo de logotipo inválido" }, 400);
+  const form = await c.req.formData();
+  const file = form.get("file");
+  if (!(file instanceof File)) return c.json({ error: "Selecione um arquivo" }, 400);
+  const allowed = slot === "favicon"
+    ? ["image/svg+xml", "image/png", "image/x-icon"]
+    : ["image/svg+xml", "image/png", "image/webp", "image/jpeg"];
+  if (!allowed.includes(file.type)) return c.json({ error: "Formato não permitido. Use SVG, PNG, WEBP ou JPG" }, 415);
+  if (file.size > 3 * 1024 * 1024) return c.json({ error: "O arquivo deve ter no máximo 3 MB" }, 413);
+  const settings = await settingsMap(c.env);
+  const previousKey = settings[settingKey];
+  const objectKey = `branding/${slot}-${id()}.${extensionForMime(file.type)}`;
+  await c.env.BUCKET.put(objectKey, file.stream(), {
+    httpMetadata: { contentType: file.type, cacheControl: "public, max-age=300" },
+    customMetadata: { originalName: file.name, slot },
+  });
+  await c.env.DB.prepare(
+    "INSERT INTO settings (key,value,updated_at) VALUES (?,?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at",
+  ).bind(settingKey, objectKey, now()).run();
+  if (previousKey && previousKey !== objectKey) await c.env.BUCKET.delete(previousKey);
+  await audit(c, "update_branding", "settings", slot, { filename: file.name, size: file.size });
+  return c.json({ ok: true, url: `/api/branding/${slot}?v=${Date.now()}` });
+});
+
+app.delete("/api/settings/branding/:slot", requireSuperAdmin(), async (c) => {
+  const slot = c.req.param("slot");
+  const settingKey = brandingSettingKey(slot);
+  if (!settingKey) return c.json({ error: "Tipo de logotipo inválido" }, 400);
+  const settings = await settingsMap(c.env);
+  if (settings[settingKey]) await c.env.BUCKET.delete(settings[settingKey]);
+  await c.env.DB.prepare("UPDATE settings SET value='',updated_at=? WHERE key=?").bind(now(), settingKey).run();
+  await audit(c, "reset_branding", "settings", slot);
   return c.json({ ok: true });
+});
+
+const testNamePredicate = "(lower(name) LIKE '%teste%' OR lower(name) LIKE '%test%' OR lower(name) LIKE '%demo%' OR lower(name) LIKE '%exemplo%')";
+
+app.get("/api/settings/test-data/preview", requireSuperAdmin(), async (c) => {
+  const [draftOrders, draftPurchases, testCustomers, testMaterials, draftReceivables, draftPayables] = await Promise.all([
+    c.env.DB.prepare(`SELECT COUNT(*) AS total FROM orders o WHERE o.status='draft' AND NOT EXISTS (SELECT 1 FROM stock_movements sm WHERE sm.order_id=o.id) AND NOT EXISTS (SELECT 1 FROM receivables r WHERE r.order_id=o.id)`).first<any>(),
+    c.env.DB.prepare(`SELECT COUNT(*) AS total FROM purchases p WHERE p.status='draft' AND NOT EXISTS (SELECT 1 FROM stock_movements sm WHERE sm.purchase_id=p.id)`).first<any>(),
+    c.env.DB.prepare(`SELECT COUNT(*) AS total FROM customers c WHERE ${testNamePredicate} AND NOT EXISTS (SELECT 1 FROM orders o WHERE o.customer_id=c.id)`).first<any>(),
+    c.env.DB.prepare(`SELECT COUNT(*) AS total FROM materials m WHERE ${testNamePredicate} AND m.current_stock=0 AND NOT EXISTS (SELECT 1 FROM stock_movements sm WHERE sm.material_id=m.id) AND NOT EXISTS (SELECT 1 FROM order_materials om WHERE om.material_id=m.id) AND NOT EXISTS (SELECT 1 FROM purchase_items pi WHERE pi.material_id=m.id)`).first<any>(),
+    c.env.DB.prepare("SELECT COUNT(*) AS total FROM receivables WHERE status='draft'").first<any>(),
+    c.env.DB.prepare("SELECT COUNT(*) AS total FROM payables WHERE status='draft'").first<any>(),
+  ]);
+  return c.json({
+    draftOrders: Number(draftOrders?.total ?? 0),
+    draftPurchases: Number(draftPurchases?.total ?? 0),
+    testCustomers: Number(testCustomers?.total ?? 0),
+    testMaterials: Number(testMaterials?.total ?? 0),
+    draftFinance: Number(draftReceivables?.total ?? 0) + Number(draftPayables?.total ?? 0),
+  });
+});
+
+app.post("/api/settings/test-data/cleanup", requireSuperAdmin(), async (c) => {
+  const data = await body<any>(c);
+  if (data.confirmation !== "LIMPAR TESTES") return c.json({ error: "Digite LIMPAR TESTES para confirmar" }, 400);
+  const deleted: Record<string, number> = {};
+  const statements: D1PreparedStatement[] = [];
+
+  if (data.draftOrders) {
+    const orders = await c.env.DB.prepare(`SELECT o.id FROM orders o WHERE o.status='draft' AND NOT EXISTS (SELECT 1 FROM stock_movements sm WHERE sm.order_id=o.id) AND NOT EXISTS (SELECT 1 FROM receivables r WHERE r.order_id=o.id)`).all<any>();
+    for (const order of orders.results) {
+      const files = await c.env.DB.prepare("SELECT r2_key FROM attachments WHERE entity_type='order' AND entity_id=?").bind(order.id).all<any>();
+      for (const file of files.results) await c.env.BUCKET.delete(file.r2_key);
+      statements.push(c.env.DB.prepare("DELETE FROM attachments WHERE entity_type='order' AND entity_id=?").bind(order.id));
+      statements.push(c.env.DB.prepare("DELETE FROM orders WHERE id=?").bind(order.id));
+    }
+    deleted.draftOrders = orders.results.length;
+  }
+  if (data.draftPurchases) {
+    const rows = await c.env.DB.prepare(`SELECT p.id FROM purchases p WHERE p.status='draft' AND NOT EXISTS (SELECT 1 FROM stock_movements sm WHERE sm.purchase_id=p.id)`).all<any>();
+    for (const row of rows.results) statements.push(c.env.DB.prepare("DELETE FROM purchases WHERE id=?").bind(row.id));
+    deleted.draftPurchases = rows.results.length;
+  }
+  if (data.testCustomers) {
+    const rows = await c.env.DB.prepare(`SELECT c.id FROM customers c WHERE ${testNamePredicate} AND NOT EXISTS (SELECT 1 FROM orders o WHERE o.customer_id=c.id)`).all<any>();
+    for (const row of rows.results) statements.push(c.env.DB.prepare("DELETE FROM customers WHERE id=?").bind(row.id));
+    deleted.testCustomers = rows.results.length;
+  }
+  if (data.testMaterials) {
+    const rows = await c.env.DB.prepare(`SELECT m.id FROM materials m WHERE ${testNamePredicate} AND m.current_stock=0 AND NOT EXISTS (SELECT 1 FROM stock_movements sm WHERE sm.material_id=m.id) AND NOT EXISTS (SELECT 1 FROM order_materials om WHERE om.material_id=m.id) AND NOT EXISTS (SELECT 1 FROM purchase_items pi WHERE pi.material_id=m.id)`).all<any>();
+    for (const row of rows.results) statements.push(c.env.DB.prepare("DELETE FROM materials WHERE id=?").bind(row.id));
+    deleted.testMaterials = rows.results.length;
+  }
+  if (data.draftFinance) {
+    const [receivables, payables] = await Promise.all([
+      c.env.DB.prepare("SELECT COUNT(*) AS total FROM receivables WHERE status='draft'").first<any>(),
+      c.env.DB.prepare("SELECT COUNT(*) AS total FROM payables WHERE status='draft'").first<any>(),
+    ]);
+    statements.push(c.env.DB.prepare("DELETE FROM receivables WHERE status='draft'"));
+    statements.push(c.env.DB.prepare("DELETE FROM payables WHERE status='draft'"));
+    deleted.draftFinance = Number(receivables?.total ?? 0) + Number(payables?.total ?? 0);
+  }
+
+  if (statements.length) await c.env.DB.batch(statements);
+  await audit(c, "cleanup_test_data", "system", undefined, deleted);
+  return c.json({ ok: true, deleted });
 });
 
 app.post("/api/attachments", async (c) => {
@@ -816,6 +1123,7 @@ app.get("/api/reports/:type.pdf", async (c) => {
   const type = c.req.param("type");
   const from = c.req.query("from") || "2000-01-01";
   const to = c.req.query("to") || "2999-12-31";
+  const brand = await pdfBrand(c.env);
   let pdf: Uint8Array;
   if (type === "stock") {
     const result = await c.env.DB.prepare(
@@ -838,6 +1146,7 @@ app.get("/api/reports/:type.pdf", async (c) => {
         { label: "Custo médio", width: 80, value: (r) => money(r.average_cost).toLocaleString("pt-BR", { style: "currency", currency: "BRL" }) },
         { label: "Local", width: 90, value: (r) => r.location || "—" },
       ],
+      brand,
     });
   } else if (type === "finance") {
     const receivables = await c.env.DB.prepare("SELECT r.*,c.name AS party FROM receivables r LEFT JOIN customers c ON c.id=r.customer_id WHERE COALESCE(r.due_date,'') BETWEEN ? AND ? ORDER BY r.due_date").bind(from, to).all<any>();
@@ -862,6 +1171,7 @@ app.get("/api/reports/:type.pdf", async (c) => {
         { label: "Valor", width: 90, value: (r) => money(r.amount).toLocaleString("pt-BR", { style: "currency", currency: "BRL" }) },
         { label: "Status", width: 80, value: (r) => r.status },
       ],
+      brand,
     });
   } else if (type === "movements") {
     const result = await c.env.DB.prepare(
@@ -884,6 +1194,7 @@ app.get("/api/reports/:type.pdf", async (c) => {
         { label: "Usuário", width: 105, value: (r) => r.user_name || "—" },
         { label: "Observação", width: 150, value: (r) => r.notes || "—" },
       ],
+      brand,
     });
   } else {
     const result = await c.env.DB.prepare(
@@ -905,6 +1216,7 @@ app.get("/api/reports/:type.pdf", async (c) => {
         { label: "Entrega", width: 90, value: (r) => r.due_date || "—" },
         { label: "Valor", width: 90, value: (r) => money(r.total_price).toLocaleString("pt-BR", { style: "currency", currency: "BRL" }) },
       ],
+      brand,
     });
   }
   return new Response(pdf as BodyInit, {
