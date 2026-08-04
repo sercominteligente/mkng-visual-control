@@ -111,9 +111,9 @@ export function SettingsPage({ user, branding, onBrandingChanged }: { user: User
             <div className="form-actions wide"><button className="primary-button">Salvar identidade e textos</button></div>
           </form>
           <div className="branding-upload-grid">
-            <BrandUpload title="Logo do painel" text="Formato horizontal, preferencialmente com fundo transparente." src={branding.sidebar_logo_url} loading={uploading === "sidebar"} onFile={(file) => void uploadBranding("sidebar", file)} onReset={() => void resetBranding("sidebar")} />
-            <BrandUpload title="Logo da tela de login" text="Versão maior, quadrada ou horizontal. SVG, PNG, WEBP ou JPG." src={branding.login_logo_url} loading={uploading === "login"} onFile={(file) => void uploadBranding("login", file)} onReset={() => void resetBranding("login")} />
-            <BrandUpload title="Ícone do navegador" text="Favicon em SVG, PNG ou ICO." src={branding.favicon_url} loading={uploading === "favicon"} onFile={(file) => void uploadBranding("favicon", file)} onReset={() => void resetBranding("favicon")} />
+            <BrandUpload title="Logo do painel" text="Formato horizontal, preferencialmente com fundo transparente." recommended="720 × 240 px" minimum="360 × 120 px" src={branding.sidebar_logo_url} loading={uploading === "sidebar"} onFile={(file) => void uploadBranding("sidebar", file)} onReset={() => void resetBranding("sidebar")} />
+            <BrandUpload title="Logo da tela de login" text="Versão principal da marca para a tela de acesso." recommended="1200 × 1200 px" minimum="600 × 600 px" src={branding.login_logo_url} loading={uploading === "login"} onFile={(file) => void uploadBranding("login", file)} onReset={() => void resetBranding("login")} />
+            <BrandUpload title="Ícone do navegador" text="Favicon quadrado em SVG, PNG ou ICO." recommended="512 × 512 px" minimum="128 × 128 px" src={branding.favicon_url} loading={uploading === "favicon"} onFile={(file) => void uploadBranding("favicon", file)} onReset={() => void resetBranding("favicon")} />
           </div>
         </div>
         <div className="branding-preview" style={{ borderColor: form.primary_color || branding.primary_color }}>
@@ -137,8 +137,8 @@ export function SettingsPage({ user, branding, onBrandingChanged }: { user: User
   </>;
 }
 
-function BrandUpload({ title, text, src, loading, onFile, onReset }: { title: string; text: string; src?: string; loading: boolean; onFile: (file?: File) => void; onReset: () => void }) {
-  return <article className="brand-upload-card"><div className="brand-upload-preview">{src ? <img src={`${src}${src.includes("?") ? "&" : "?"}preview=1`} alt={title} /> : <span>Sem arquivo personalizado</span>}</div><h3>{title}</h3><p>{text}</p><label className="secondary-button file-button">{loading ? "Enviando..." : "Selecionar arquivo"}<input type="file" accept="image/svg+xml,image/png,image/webp,image/jpeg,image/x-icon" disabled={loading} onChange={(event) => onFile(event.target.files?.[0])} /></label><button className="text-button action-danger" type="button" onClick={onReset}>Restaurar padrão</button></article>;
+function BrandUpload({ title, text, recommended, minimum, src, loading, onFile, onReset }: { title: string; text: string; recommended: string; minimum: string; src?: string; loading: boolean; onFile: (file?: File) => void; onReset: () => void }) {
+  return <article className="brand-upload-card"><div className="brand-upload-preview">{src ? <img src={`${src}${src.includes("?") ? "&" : "?"}preview=1`} alt={title} /> : <span>Sem arquivo personalizado</span>}</div><h3>{title}</h3><p>{text}</p><div className="image-specs"><div><span>Medida recomendada</span><strong>{recommended}</strong></div><div><span>Mínimo aceito</span><strong>{minimum}</strong></div><small>Formatos: SVG, PNG, WEBP ou JPG. Até 3 MB. Use fundo transparente quando possível.</small></div><label className="secondary-button file-button">{loading ? "Enviando..." : "Selecionar arquivo"}<input type="file" accept="image/svg+xml,image/png,image/webp,image/jpeg,image/x-icon" disabled={loading} onChange={(event) => onFile(event.target.files?.[0])} /></label><button className="text-button action-danger" type="button" onClick={onReset}>Restaurar padrão</button></article>;
 }
 
 function CleanupOption({ checked, onChange, title, count, text }: { checked: boolean; onChange: (checked: boolean) => void; title: string; count: number; text: string }) {

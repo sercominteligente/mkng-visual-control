@@ -355,3 +355,22 @@ input:disabled { opacity: .6; cursor: not-allowed; }
   .event-row button { grid-column: 2; }
   .order-actions { min-width: 280px; }
 }
+
+/* v0.4 - consumo por unidade/m² e orientações de identidade */
+.consumption-mode { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.consumption-mode button { border: 1px solid var(--line); background: #11151a; color: var(--muted); padding: 11px 12px; border-radius: 10px; cursor: pointer; font-weight: 700; }
+.consumption-mode button.active { color: #fff; border-color: var(--orange); background: color-mix(in srgb, var(--orange) 13%, #11151a); }
+.area-calculator { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+.area-calculator label { display: grid; gap: 6px; }
+.area-calculator label span, .stack-form label span { color: var(--muted); font-size: 12px; font-weight: 700; }
+.calculated-area { grid-column: 1 / -1; display: flex; align-items: center; justify-content: space-between; border: 1px dashed var(--line); border-radius: 12px; padding: 12px 14px; background: #0c1014; }
+.calculated-area span { color: var(--muted); font-size: 12px; }
+.calculated-area strong { color: var(--green); font-size: 18px; }
+.positive-value { color: var(--green); font-weight: 800; }
+.negative-value { color: #ff6978; font-weight: 800; }
+.image-specs { display: grid; gap: 8px; margin: 10px 0 14px; padding: 12px; border: 1px solid var(--line); background: #0c1014; border-radius: 12px; }
+.image-specs > div { display: flex; align-items: center; justify-content: space-between; gap: 14px; }
+.image-specs span { color: var(--muted); font-size: 12px; }
+.image-specs strong { color: #fff; font-size: 13px; }
+.image-specs small { color: var(--muted); line-height: 1.45; }
+@media (max-width: 720px) { .area-calculator { grid-template-columns: 1fr; } .consumption-mode { grid-template-columns: 1fr; } }

@@ -1,7 +1,8 @@
 import { SimpleCrudPage, statusColumn } from "./SimpleCrudPage";
+import type { User } from "../components/Layout";
 
-export function SuppliersPage() {
-  return <SimpleCrudPage title="Fornecedores" eyebrow="COMPRAS E SUPRIMENTOS" description="Cadastro de fornecedores para compras, entradas e contas a pagar." endpoint="/suppliers" entityName="Fornecedor" fields={[
+export function SuppliersPage({ user }: { user: User }) {
+  return <SimpleCrudPage user={user} title="Fornecedores" eyebrow="COMPRAS E SUPRIMENTOS" description="Cadastro de fornecedores para compras, entradas e contas a pagar." endpoint="/suppliers" entityName="Fornecedor" fields={[
     { key: "name", label: "Nome / Razão social", required: true },
     { key: "document", label: "CPF / CNPJ" },
     { key: "contact_name", label: "Contato principal" },

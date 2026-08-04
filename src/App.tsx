@@ -58,15 +58,15 @@ export function App() {
   let page: React.ReactNode;
   if (path === "/dashboard" || path === "/") page = <DashboardPage userName={user.name} />;
   else if (path === "/orders" || path.startsWith("/orders/")) page = <OrdersPage user={user} />;
-  else if (path === "/production") page = <ProductionPage />;
-  else if (path === "/materials") page = <MaterialsPage />;
-  else if (path === "/purchases") page = <PurchasesPage />;
-  else if (path === "/stock") page = <StockPage />;
-  else if (path === "/customers") page = <CustomersPage />;
-  else if (path === "/suppliers") page = <SuppliersPage />;
-  else if (path === "/finance") page = <FinancePage />;
+  else if (path === "/production") page = <ProductionPage user={user} />;
+  else if (path === "/materials") page = <MaterialsPage user={user} />;
+  else if (path === "/purchases") page = <PurchasesPage user={user} />;
+  else if (path === "/stock") page = <StockPage user={user} />;
+  else if (path === "/customers") page = <CustomersPage user={user} />;
+  else if (path === "/suppliers") page = <SuppliersPage user={user} />;
+  else if (path === "/finance") page = <FinancePage user={user} />;
   else if (path === "/reports") page = <ReportsPage />;
-  else if (path === "/users") page = <UsersPage />;
+  else if (path === "/users") page = <UsersPage user={user} />;
   else if (path === "/settings") page = <SettingsPage user={user} branding={branding} onBrandingChanged={refreshBranding} />;
   else page = <div className="panel"><h2>Página não encontrada</h2><button className="primary-button" onClick={() => navigate("/dashboard")}>Voltar ao painel</button></div>;
 

@@ -1,29 +1,22 @@
-# Atualização MKNG Visual Control 0.3.0
+# Como instalar a atualização v0.4.0
 
-## Como enviar ao GitHub
+1. Extraia o arquivo ZIP de atualização.
+2. No GitHub, abra o repositório do sistema.
+3. Clique em **Add file > Upload files**.
+4. Arraste o conteúdo extraído para a raiz do repositório.
+5. Permita a substituição dos arquivos existentes.
+6. Confirme que o pacote não contém `wrangler.jsonc`.
+7. Use a mensagem de commit:
 
-1. Extraia este ZIP no computador.
-2. No repositório `mkng-visual-control`, clique em `Add file` → `Upload files`.
-3. Arraste **o conteúdo extraído**, mantendo as pastas.
-4. Permita a substituição dos arquivos existentes.
-5. Confirme que o arquivo `migrations/0004_orders_branding_maintenance.sql` aparece na lista.
-6. Faça o commit diretamente na branch `main`.
+   `Corrige baixas de estoque e exclusões do Super Admin`
 
-Mensagem do commit:
+8. Aguarde o build automático da Cloudflare ficar verde.
+9. No log, é normal aparecer `No migrations to apply`.
+10. No navegador, pressione `Ctrl + F5` antes dos testes.
 
-```text
-Implementa cancelamento, PDFs e personalização visual
-```
+## Teste mínimo após o deploy
 
-## Proteções
-
-- Este pacote não contém `wrangler.jsonc`; o Database ID e o endereço atual não serão alterados.
-- `src/server/auth.ts` preserva o PBKDF2 em 100.000 iterações e adiciona a proteção exclusiva do Super Administrador.
-- A Cloudflare aplicará a migração `0004` automaticamente no próximo build.
-
-## Primeiro teste após o build verde
-
-1. Pressione `Ctrl + F5` no sistema.
-2. Abra um pedido em rascunho e confirme que apenas o Super Administrador vê `Excluir rascunho`.
-3. Abra uma movimentação no histórico e gere o PDF.
-4. Em `Configurações`, envie um logo de teste para o painel.
+- Cadastre um material por unidade com saldo 10 e dê baixa de 2. O saldo deve ficar 8.
+- Cadastre um material em m² com saldo 20 e consuma uma peça de 1000 × 2000 mm. O saldo deve ficar 18 m².
+- Confirme que usuários não Super Admin não veem os botões de exclusão definitiva.
+- Confirme as medidas exibidas em Configurações > Identidade visual.

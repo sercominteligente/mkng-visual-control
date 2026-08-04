@@ -69,6 +69,46 @@ function materialType(value: unknown): string {
   return ["sheet", "roll", "paint", "general"].includes(candidate) ? candidate : "general";
 }
 
+function stockUnitLabel(unit: string, value: number): string {
+  const labels: Record<string, [string, string]> = {
+    un: ["unidade", "unidades"], chapa: ["chapa", "chapas"], m: ["metro", "metros"],
+    m2: ["m²", "m²"], l: ["litro", "litros"], ml: ["mililitro", "mililitros"],
+    kg: ["kg", "kg"], rolo: ["rolo", "rolos"], lata: ["lata", "latas"],
+    kit: ["kit", "kits"], pct: ["pacote", "pacotes"],
+  };
+  const pair = labels[unit] ?? [unit || "un", unit || "un"];
+  return Math.abs(value) === 1 ? pair[0] : pair[1];
+}
+
+function resolveConsumptionQuantity(data: any, material: any): { quantity: number; detail: string } {
+  if (material.unit === "m2" && data.mode === "dimensions") {
+    const widthMm = quantity(data.width_mm);
+    const heightMm = quantity(data.height_mm);
+    const pieces = Math.max(quantity(data.pieces || 1), 1);
+    if (widthMm <= 0 || heightMm <= 0) throw new Error("Informe largura e altura para calcular o consumo em m²");
+    const area = quantity((widthMm / 1000) * (heightMm / 1000) * pieces);
+    if (area <= 0) throw new Error("A área calculada deve ser maior que zero");
+    return { quantity: area, detail: `${widthMm} × ${heightMm} mm × ${pieces} peça(s) = ${area} m²` };
+  }
+  const value = quantity(data.quantity);
+  if (value <= 0) throw new Error("A quantidade consumida deve ser maior que zero");
+  const indivisibleUnits = new Set(["un", "chapa", "rolo", "lata", "kit", "pct"]);
+  if (indivisibleUnits.has(String(material.unit)) && !Number.isInteger(value)) {
+    throw new Error(`A unidade ${stockUnitLabel(material.unit, 2)} exige quantidade inteira`);
+  }
+  return { quantity: value, detail: `${value} ${stockUnitLabel(material.unit, value)}` };
+}
+
+async function attachmentKeys(env: AppEnv["Bindings"], entityType: string, entityId: string): Promise<string[]> {
+  const result = await env.DB.prepare("SELECT r2_key FROM attachments WHERE entity_type=? AND entity_id=?")
+    .bind(entityType, entityId).all<any>();
+  return result.results.map((item) => String(item.r2_key));
+}
+
+async function deleteR2Keys(env: AppEnv["Bindings"], keys: string[]): Promise<void> {
+  for (const key of keys) await env.BUCKET.delete(key);
+}
+
 async function settingsMap(env: AppEnv["Bindings"]): Promise<Record<string, string>> {
   const result = await env.DB.prepare("SELECT key,value FROM settings").all<{ key: string; value: string }>();
   return Object.fromEntries(result.results.map((item) => [item.key, item.value ?? ""]));
@@ -290,12 +330,17 @@ app.put("/api/customers/:id", async (c) => {
   await audit(c, "update", "customer", c.req.param("id"), data);
   return c.json({ ok: true });
 });
-app.delete("/api/customers/:id", async (c) => {
+app.delete("/api/customers/:id", requireSuperAdmin(), async (c) => {
   const entityId = c.req.param("id");
-  const linked = await c.env.DB.prepare("SELECT COUNT(*) AS total FROM orders WHERE customer_id = ?").bind(entityId).first<any>();
-  if ((linked?.total ?? 0) > 0) return c.json({ error: "Cliente possui pedidos vinculados; desative-o em vez de excluir" }, 409);
-  await c.env.DB.prepare("DELETE FROM customers WHERE id = ?").bind(entityId).run();
-  await audit(c, "delete", "customer", entityId);
+  const customer = await c.env.DB.prepare("SELECT id,name FROM customers WHERE id=?").bind(entityId).first<any>();
+  if (!customer) return c.json({ error: "Cliente não encontrado" }, 404);
+  const keys = await attachmentKeys(c.env, "customer", entityId);
+  await c.env.DB.batch([
+    c.env.DB.prepare("DELETE FROM attachments WHERE entity_type='customer' AND entity_id=?").bind(entityId),
+    c.env.DB.prepare("DELETE FROM customers WHERE id=?").bind(entityId),
+  ]);
+  await deleteR2Keys(c.env, keys);
+  await audit(c, "delete_permanent", "customer", entityId, { name: customer.name });
   return c.json({ ok: true });
 });
 
@@ -333,12 +378,17 @@ app.put("/api/suppliers/:id", async (c) => {
   await audit(c, "update", "supplier", c.req.param("id"), data);
   return c.json({ ok: true });
 });
-app.delete("/api/suppliers/:id", async (c) => {
+app.delete("/api/suppliers/:id", requireSuperAdmin(), async (c) => {
   const entityId = c.req.param("id");
-  const linked = await c.env.DB.prepare("SELECT COUNT(*) AS total FROM purchases WHERE supplier_id = ?").bind(entityId).first<any>();
-  if ((linked?.total ?? 0) > 0) return c.json({ error: "Fornecedor possui compras vinculadas; desative-o em vez de excluir" }, 409);
-  await c.env.DB.prepare("DELETE FROM suppliers WHERE id = ?").bind(entityId).run();
-  await audit(c, "delete", "supplier", entityId);
+  const supplier = await c.env.DB.prepare("SELECT id,name FROM suppliers WHERE id=?").bind(entityId).first<any>();
+  if (!supplier) return c.json({ error: "Fornecedor não encontrado" }, 404);
+  const keys = await attachmentKeys(c.env, "supplier", entityId);
+  await c.env.DB.batch([
+    c.env.DB.prepare("DELETE FROM attachments WHERE entity_type='supplier' AND entity_id=?").bind(entityId),
+    c.env.DB.prepare("DELETE FROM suppliers WHERE id=?").bind(entityId),
+  ]);
+  await deleteR2Keys(c.env, keys);
+  await audit(c, "delete_permanent", "supplier", entityId, { name: supplier.name });
   return c.json({ ok: true });
 });
 
@@ -388,14 +438,15 @@ app.put("/api/material-categories/:id", requirePermission("stock"), async (c) =>
   return c.json({ ok: true });
 });
 
-app.delete("/api/material-categories/:id", requirePermission("stock"), async (c) => {
+app.delete("/api/material-categories/:id", requireSuperAdmin(), async (c) => {
   const entityId = c.req.param("id");
-  const linked = await c.env.DB.prepare("SELECT COUNT(*) AS total FROM materials WHERE category_id = ?").bind(entityId).first<any>();
-  if ((linked?.total ?? 0) > 0) {
-    return c.json({ error: "Categoria possui materiais vinculados; transfira os materiais ou desative a categoria" }, 409);
-  }
-  await c.env.DB.prepare("DELETE FROM material_categories WHERE id = ?").bind(entityId).run();
-  await audit(c, "delete", "material_category", entityId);
+  const category = await c.env.DB.prepare("SELECT id,name FROM material_categories WHERE id=?").bind(entityId).first<any>();
+  if (!category) return c.json({ error: "Categoria não encontrada" }, 404);
+  await c.env.DB.batch([
+    c.env.DB.prepare("UPDATE materials SET category_id=NULL,updated_at=? WHERE category_id=?").bind(now(), entityId),
+    c.env.DB.prepare("DELETE FROM material_categories WHERE id=?").bind(entityId),
+  ]);
+  await audit(c, "delete_permanent", "material_category", entityId, { name: category.name, materialsUnlinked: true });
   return c.json({ ok: true });
 });
 
@@ -403,7 +454,7 @@ app.get("/api/materials", async (c) => {
   const search = c.req.query("q")?.trim() ?? "";
   const result = await c.env.DB.prepare(
     `SELECT m.*, c.name AS category_name,
-      COALESCE((SELECT SUM(MAX(om.reserved_qty - om.consumed_qty + om.returned_qty, 0)) FROM order_materials om JOIN orders o ON o.id=om.order_id WHERE om.material_id=m.id AND o.status NOT IN ('completed','cancelled')),0) AS reserved_stock
+      COALESCE((SELECT SUM(MAX(om.reserved_qty - om.consumed_qty, 0)) FROM order_materials om JOIN orders o ON o.id=om.order_id WHERE om.material_id=m.id AND o.status NOT IN ('completed','cancelled')),0) AS reserved_stock
      FROM materials m LEFT JOIN material_categories c ON c.id=m.category_id
      WHERE m.name LIKE ? OR COALESCE(m.sku,'') LIKE ? OR COALESCE(c.name,'') LIKE ?
      ORDER BY m.active DESC, c.sort_order, m.name`,
@@ -513,28 +564,26 @@ app.put("/api/materials/:id", async (c) => {
   return c.json({ ok: true, sku });
 });
 
-app.delete("/api/materials/:id", async (c) => {
+app.delete("/api/materials/:id", requireSuperAdmin(), async (c) => {
   const entityId = c.req.param("id");
-  const [movements, purchases, orders] = await Promise.all([
-    c.env.DB.prepare(
-      "SELECT COUNT(*) AS total, SUM(CASE WHEN type <> 'opening' THEN 1 ELSE 0 END) AS protected FROM stock_movements WHERE material_id = ?",
-    ).bind(entityId).first<any>(),
-    c.env.DB.prepare("SELECT COUNT(*) AS total FROM purchase_items WHERE material_id = ?").bind(entityId).first<any>(),
-    c.env.DB.prepare("SELECT COUNT(*) AS total FROM order_materials WHERE material_id = ?").bind(entityId).first<any>(),
-  ]);
-
-  const hasOperationalHistory = Number(movements?.protected ?? 0) > 0 || Number(purchases?.total ?? 0) > 0 || Number(orders?.total ?? 0) > 0;
-  if (hasOperationalHistory) {
-    return c.json({ error: "Material possui histórico operacional; desative-o para preservar estoque, pedidos e relatórios" }, 409);
+  const material = await c.env.DB.prepare("SELECT id,name,sku FROM materials WHERE id=?").bind(entityId).first<any>();
+  if (!material) return c.json({ error: "Material não encontrado" }, 404);
+  const keys = await attachmentKeys(c.env, "material", entityId);
+  const affectedPurchases = await c.env.DB.prepare("SELECT DISTINCT purchase_id FROM purchase_items WHERE material_id=?").bind(entityId).all<any>();
+  const statements: D1PreparedStatement[] = [
+    c.env.DB.prepare("DELETE FROM purchase_items WHERE material_id=?").bind(entityId),
+    c.env.DB.prepare("DELETE FROM order_materials WHERE material_id=?").bind(entityId),
+    c.env.DB.prepare("DELETE FROM stock_movements WHERE material_id=?").bind(entityId),
+    c.env.DB.prepare("DELETE FROM attachments WHERE entity_type='material' AND entity_id=?").bind(entityId),
+    c.env.DB.prepare("DELETE FROM materials WHERE id=?").bind(entityId),
+  ];
+  for (const row of affectedPurchases.results) {
+    statements.push(c.env.DB.prepare("UPDATE purchases SET total=COALESCE((SELECT SUM(total) FROM purchase_items WHERE purchase_id=?),0),updated_at=? WHERE id=?")
+      .bind(row.purchase_id, now(), row.purchase_id));
   }
-
-  const statements = [];
-  if (Number(movements?.total ?? 0) > 0) {
-    statements.push(c.env.DB.prepare("DELETE FROM stock_movements WHERE material_id = ? AND type = 'opening'").bind(entityId));
-  }
-  statements.push(c.env.DB.prepare("DELETE FROM materials WHERE id = ?").bind(entityId));
   await c.env.DB.batch(statements);
-  await audit(c, "delete", "material", entityId);
+  await deleteR2Keys(c.env, keys);
+  await audit(c, "delete_permanent", "material", entityId, { name: material.name, sku: material.sku });
   return c.json({ ok: true });
 });
 
@@ -571,6 +620,36 @@ app.post("/api/stock/adjust", async (c) => {
     ).bind(movementId, data.material_id, qty > 0 ? "adjustment_in" : "adjustment_out", qty, money(material.average_cost), money(qty * material.average_cost), data.notes ?? "Ajuste manual", c.get("user").id),
   ]);
   await audit(c, "stock_adjust", "material", data.material_id, { quantity: qty, newStock, notes: data.notes });
+  return c.json({ ok: true, newStock });
+});
+app.delete("/api/stock/movements/:id", requireSuperAdmin(), async (c) => {
+  const movementId = c.req.param("id");
+  const movement = await c.env.DB.prepare(
+    `SELECT sm.*,m.current_stock,m.name AS material_name FROM stock_movements sm JOIN materials m ON m.id=sm.material_id WHERE sm.id=?`,
+  ).bind(movementId).first<any>();
+  if (!movement) return c.json({ error: "Movimentação não encontrada" }, 404);
+  const newStock = quantity(movement.current_stock) - quantity(movement.quantity);
+  if (newStock < 0) return c.json({ error: `Não é possível excluir: o saldo de ${movement.material_name} ficaria negativo` }, 409);
+  const statements: D1PreparedStatement[] = [
+    c.env.DB.prepare("UPDATE materials SET current_stock=?,updated_at=? WHERE id=?").bind(newStock, now(), movement.material_id),
+  ];
+  if (movement.order_id && movement.type === "consumption") {
+    statements.push(c.env.DB.prepare("UPDATE order_materials SET consumed_qty=MAX(consumed_qty-?,0) WHERE order_id=? AND material_id=?")
+      .bind(Math.abs(quantity(movement.quantity)), movement.order_id, movement.material_id));
+  }
+  if (movement.order_id && movement.type === "return") {
+    statements.push(c.env.DB.prepare("UPDATE order_materials SET returned_qty=MAX(returned_qty-?,0) WHERE order_id=? AND material_id=?")
+      .bind(Math.abs(quantity(movement.quantity)), movement.order_id, movement.material_id));
+  }
+  statements.push(c.env.DB.prepare("DELETE FROM stock_movements WHERE id=?").bind(movementId));
+  await c.env.DB.batch(statements);
+  if (movement.purchase_id) {
+    const remaining = await c.env.DB.prepare("SELECT COUNT(*) AS total FROM stock_movements WHERE purchase_id=?").bind(movement.purchase_id).first<any>();
+    if (Number(remaining?.total ?? 0) === 0) {
+      await c.env.DB.prepare("UPDATE purchases SET status='draft',received_at=NULL,updated_at=? WHERE id=?").bind(now(), movement.purchase_id).run();
+    }
+  }
+  await audit(c, "delete_permanent", "stock_movement", movementId, { material: movement.material_name, reversedQuantity: movement.quantity, newStock });
   return c.json({ ok: true, newStock });
 });
 
@@ -644,6 +723,34 @@ app.post("/api/purchases/:id/receive", async (c) => {
   await audit(c, "receive", "purchase", purchaseId);
   return c.json({ ok: true });
 });
+app.delete("/api/purchases/:id", requireSuperAdmin(), async (c) => {
+  const purchaseId = c.req.param("id");
+  const purchase = await c.env.DB.prepare("SELECT id,code,status FROM purchases WHERE id=?").bind(purchaseId).first<any>();
+  if (!purchase) return c.json({ error: "Compra não encontrada" }, 404);
+  const movements = await c.env.DB.prepare(
+    `SELECT sm.material_id,SUM(sm.quantity) AS net_quantity,m.current_stock,m.name AS material_name
+       FROM stock_movements sm JOIN materials m ON m.id=sm.material_id
+      WHERE sm.purchase_id=? GROUP BY sm.material_id,m.current_stock,m.name`,
+  ).bind(purchaseId).all<any>();
+  const statements: D1PreparedStatement[] = [];
+  for (const row of movements.results) {
+    const newStock = quantity(row.current_stock) - quantity(row.net_quantity);
+    if (newStock < 0) return c.json({ error: `Exclusão bloqueada: o saldo de ${row.material_name} ficaria negativo. Exclua primeiro consumos dependentes.` }, 409);
+    statements.push(c.env.DB.prepare("UPDATE materials SET current_stock=?,updated_at=? WHERE id=?").bind(newStock, now(), row.material_id));
+  }
+  const keys = await attachmentKeys(c.env, "purchase", purchaseId);
+  statements.push(
+    c.env.DB.prepare("DELETE FROM stock_movements WHERE purchase_id=?").bind(purchaseId),
+    c.env.DB.prepare("DELETE FROM payables WHERE purchase_id=?").bind(purchaseId),
+    c.env.DB.prepare("DELETE FROM attachments WHERE entity_type='purchase' AND entity_id=?").bind(purchaseId),
+    c.env.DB.prepare("DELETE FROM purchases WHERE id=?").bind(purchaseId),
+  );
+  await c.env.DB.batch(statements);
+  await deleteR2Keys(c.env, keys);
+  await audit(c, "delete_permanent", "purchase", purchaseId, { code: purchase.code, status: purchase.status });
+  return c.json({ ok: true });
+});
+
 
 app.use("/api/orders", requirePermission("orders"));
 app.use("/api/orders/*", requirePermission("orders"));
@@ -663,18 +770,13 @@ app.get("/api/orders/:id", async (c) => {
   const orderId = c.req.param("id");
   const snapshot = await loadOrderSnapshot(c, orderId);
   if (!snapshot) return c.json({ error: "Pedido não encontrado" }, 404);
-  const [attachments, events, blockers] = await Promise.all([
+  const [attachments, events] = await Promise.all([
     c.env.DB.prepare("SELECT id,filename,mime_type,size_bytes,created_at FROM attachments WHERE entity_type='order' AND entity_id=? ORDER BY created_at DESC").bind(orderId).all<any>(),
     c.env.DB.prepare(
       `SELECT e.id,e.event_type,e.label,e.status,e.notes,e.created_at,u.name AS user_name
          FROM order_events e LEFT JOIN users u ON u.id=e.created_by
         WHERE e.order_id=? ORDER BY e.created_at DESC`,
     ).bind(orderId).all<any>(),
-    c.env.DB.prepare(
-      `SELECT
-         (SELECT COUNT(*) FROM stock_movements WHERE order_id=?) AS movements,
-         (SELECT COUNT(*) FROM receivables WHERE order_id=?) AS receivables`,
-    ).bind(orderId, orderId).first<any>(),
   ]);
   const user = c.get("user");
   return c.json({
@@ -682,7 +784,7 @@ app.get("/api/orders/:id", async (c) => {
     attachments: attachments.results,
     events: events.results,
     permissions: {
-      canDeleteDraft: user.role === "super_admin" && snapshot.order.status === "draft" && Number(blockers?.movements ?? 0) === 0 && Number(blockers?.receivables ?? 0) === 0,
+      canDeletePermanent: user.role === "super_admin",
       canCancel: ["super_admin", "admin", "manager"].includes(user.role) && !["cancelled", "completed"].includes(snapshot.order.status),
       canViewFinancial: canViewFinancial(user.role),
     },
@@ -784,24 +886,31 @@ app.post("/api/orders/:id/materials", async (c) => {
 app.post("/api/orders/:id/consume", async (c) => {
   const data = await body<any>(c);
   const orderId = c.req.param("id");
-  const qty = quantity(data.quantity);
-  if (!data.material_id || qty <= 0) return c.json({ error: "Material e quantidade são obrigatórios" }, 400);
+  if (!data.material_id) return c.json({ error: "Selecione o material" }, 400);
   const order = await c.env.DB.prepare("SELECT code,status FROM orders WHERE id=?").bind(orderId).first<any>();
-  const material = await c.env.DB.prepare("SELECT current_stock,average_cost,name FROM materials WHERE id=?").bind(data.material_id).first<any>();
+  const material = await c.env.DB.prepare("SELECT current_stock,average_cost,name,unit FROM materials WHERE id=?").bind(data.material_id).first<any>();
   if (!order || !material) return c.json({ error: "Pedido ou material não encontrado" }, 404);
-  if (quantity(material.current_stock) < qty) return c.json({ error: `Estoque insuficiente de ${material.name}` }, 409);
-  const newStock = quantity(material.current_stock) - qty;
+  if (["cancelled", "completed"].includes(order.status)) return c.json({ error: "Não é possível registrar consumo em pedido cancelado ou concluído" }, 409);
+  let resolved: { quantity: number; detail: string };
+  try { resolved = resolveConsumptionQuantity(data, material); }
+  catch (error) { return c.json({ error: error instanceof Error ? error.message : "Quantidade inválida" }, 400); }
+  const qty = resolved.quantity;
+  const currentStock = quantity(material.current_stock);
+  if (currentStock < qty) return c.json({ error: `Estoque insuficiente de ${material.name}. Disponível: ${currentStock} ${stockUnitLabel(material.unit, currentStock)}` }, 409);
+  const newStock = quantity(currentStock - qty);
+  const note = data.notes?.trim() || `Consumo confirmado no ${order.code}`;
   await c.env.DB.batch([
     c.env.DB.prepare("UPDATE materials SET current_stock=?,updated_at=? WHERE id=?").bind(newStock, now(), data.material_id),
     c.env.DB.prepare(`INSERT INTO order_materials (id,order_id,material_id,planned_qty,reserved_qty,consumed_qty) VALUES (?,?,?,?,?,?) ON CONFLICT(order_id,material_id) DO UPDATE SET consumed_qty=order_materials.consumed_qty+excluded.consumed_qty`).bind(id(), orderId, data.material_id, 0, 0, qty),
     c.env.DB.prepare(
       "INSERT INTO stock_movements (id,material_id,type,quantity,unit_cost,total_cost,order_id,notes,user_id) VALUES (?,?,?,?,?,?,?,?,?)",
-    ).bind(id(), data.material_id, "consumption", -qty, money(material.average_cost), -money(qty * material.average_cost), orderId, data.notes ?? `Consumo confirmado no ${order.code}`, c.get("user").id),
+    ).bind(id(), data.material_id, "consumption", -qty, money(material.average_cost), -money(qty * material.average_cost), orderId, `${note} | ${resolved.detail}`, c.get("user").id),
   ]);
-  await audit(c, "consume_material", "order", orderId, { material_id: data.material_id, quantity: qty, newStock });
-  await recordOrderEvent(c, orderId, "material_consumed", `Consumo confirmado: ${material.name}`, order.status, `${qty} unidade(s). ${data.notes ?? ""}`.trim());
-  return c.json({ ok: true, newStock });
+  await audit(c, "consume_material", "order", orderId, { material_id: data.material_id, quantity: qty, unit: material.unit, newStock, mode: data.mode || "quantity" });
+  await recordOrderEvent(c, orderId, "material_consumed", `Consumo confirmado: ${material.name}`, order.status, `${resolved.detail}. Saldo restante: ${newStock} ${stockUnitLabel(material.unit, newStock)}. ${data.notes ?? ""}`.trim());
+  return c.json({ ok: true, quantity: qty, unit: material.unit, newStock });
 });
+
 app.post("/api/orders/:id/return", async (c) => {
   const data = await body<any>(c);
   const orderId = c.req.param("id");
@@ -865,26 +974,32 @@ app.post("/api/orders/:id/cancel", async (c) => {
 
 app.delete("/api/orders/:id", requireSuperAdmin(), async (c) => {
   const orderId = c.req.param("id");
-  const order = await c.env.DB.prepare("SELECT id,code,status FROM orders WHERE id=?").bind(orderId).first<any>();
+  const order = await c.env.DB.prepare("SELECT id,code,status,title FROM orders WHERE id=?").bind(orderId).first<any>();
   if (!order) return c.json({ error: "Pedido não encontrado" }, 404);
-  if (order.status !== "draft") return c.json({ error: "Somente rascunhos podem ser excluídos definitivamente" }, 409);
-  const blockers = await c.env.DB.prepare(
-    `SELECT
-      (SELECT COUNT(*) FROM stock_movements WHERE order_id=?) AS movements,
-      (SELECT COUNT(*) FROM receivables WHERE order_id=?) AS receivables`,
-  ).bind(orderId, orderId).first<any>();
-  if (Number(blockers?.movements ?? 0) > 0 || Number(blockers?.receivables ?? 0) > 0) {
-    return c.json({ error: "Rascunho possui movimentação ou lançamento financeiro e não pode ser apagado" }, 409);
+  const movements = await c.env.DB.prepare(
+    `SELECT sm.material_id,SUM(sm.quantity) AS net_quantity,m.current_stock,m.name AS material_name
+       FROM stock_movements sm JOIN materials m ON m.id=sm.material_id
+      WHERE sm.order_id=? GROUP BY sm.material_id,m.current_stock,m.name`,
+  ).bind(orderId).all<any>();
+  const statements: D1PreparedStatement[] = [];
+  for (const row of movements.results) {
+    const newStock = quantity(row.current_stock) - quantity(row.net_quantity);
+    if (newStock < 0) return c.json({ error: `Exclusão bloqueada: o saldo de ${row.material_name} ficaria negativo` }, 409);
+    statements.push(c.env.DB.prepare("UPDATE materials SET current_stock=?,updated_at=? WHERE id=?").bind(newStock, now(), row.material_id));
   }
-  const attachments = await c.env.DB.prepare("SELECT r2_key FROM attachments WHERE entity_type='order' AND entity_id=?").bind(orderId).all<any>();
-  for (const item of attachments.results) await c.env.BUCKET.delete(item.r2_key);
-  await c.env.DB.batch([
+  const keys = await attachmentKeys(c.env, "order", orderId);
+  statements.push(
+    c.env.DB.prepare("DELETE FROM stock_movements WHERE order_id=?").bind(orderId),
+    c.env.DB.prepare("DELETE FROM receivables WHERE order_id=?").bind(orderId),
     c.env.DB.prepare("DELETE FROM attachments WHERE entity_type='order' AND entity_id=?").bind(orderId),
     c.env.DB.prepare("DELETE FROM orders WHERE id=?").bind(orderId),
-  ]);
-  await audit(c, "delete_draft", "order", orderId, { code: order.code });
+  );
+  await c.env.DB.batch(statements);
+  await deleteR2Keys(c.env, keys);
+  await audit(c, "delete_permanent", "order", orderId, { code: order.code, title: order.title, status: order.status, stockReversed: movements.results.length });
   return c.json({ ok: true });
 });
+
 
 app.use("/api/finance", requirePermission("finance"));
 app.use("/api/finance/*", requirePermission("finance"));
@@ -920,6 +1035,16 @@ app.put("/api/finance/:kind/:id", async (c) => {
   await audit(c, "update", table === "payables" ? "payable" : "receivable", c.req.param("id"), data);
   return c.json({ ok: true });
 });
+app.delete("/api/finance/:kind/:id", requireSuperAdmin(), async (c) => {
+  const table = c.req.param("kind") === "payable" ? "payables" : "receivables";
+  const entityType = table === "payables" ? "payable" : "receivable";
+  const entityId = c.req.param("id");
+  const row = await c.env.DB.prepare(`SELECT id,description,amount,status FROM ${table} WHERE id=?`).bind(entityId).first<any>();
+  if (!row) return c.json({ error: "Lançamento não encontrado" }, 404);
+  await c.env.DB.prepare(`DELETE FROM ${table} WHERE id=?`).bind(entityId).run();
+  await audit(c, "delete_permanent", entityType, entityId, row);
+  return c.json({ ok: true });
+});
 
 app.use("/api/users", requirePermission("users"));
 app.use("/api/users/*", requirePermission("users"));
@@ -950,6 +1075,19 @@ app.put("/api/users/:id", async (c) => {
       .bind(data.name, String(data.email).toLowerCase(), data.role, data.status, now(), userId).run();
   }
   await audit(c, "update", "user", userId, { ...data, password: undefined });
+  return c.json({ ok: true });
+});
+app.delete("/api/users/:id", requireSuperAdmin(), async (c) => {
+  const userId = c.req.param("id");
+  if (userId === c.get("user").id) return c.json({ error: "Você não pode excluir o próprio usuário conectado" }, 409);
+  const target = await c.env.DB.prepare("SELECT id,name,email,role FROM users WHERE id=?").bind(userId).first<any>();
+  if (!target) return c.json({ error: "Usuário não encontrado" }, 404);
+  if (target.role === "super_admin") {
+    const total = await c.env.DB.prepare("SELECT COUNT(*) AS total FROM users WHERE role='super_admin'").first<any>();
+    if (Number(total?.total ?? 0) <= 1) return c.json({ error: "O último Super Administrador não pode ser excluído" }, 409);
+  }
+  await c.env.DB.prepare("DELETE FROM users WHERE id=?").bind(userId).run();
+  await audit(c, "delete_permanent", "user", userId, { name: target.name, email: target.email, role: target.role });
   return c.json({ ok: true });
 });
 
@@ -1108,12 +1246,12 @@ app.get("/api/attachments/:id", async (c) => {
   headers.set("Cache-Control", "private, max-age=300");
   return new Response(object.body, { headers });
 });
-app.delete("/api/attachments/:id", async (c) => {
+app.delete("/api/attachments/:id", requireSuperAdmin(), async (c) => {
   const row = await c.env.DB.prepare("SELECT * FROM attachments WHERE id=?").bind(c.req.param("id")).first<any>();
   if (!row) return c.json({ error: "Arquivo não encontrado" }, 404);
   await c.env.BUCKET.delete(row.r2_key);
   await c.env.DB.prepare("DELETE FROM attachments WHERE id=?").bind(row.id).run();
-  await audit(c, "delete", "attachment", row.id);
+  await audit(c, "delete_permanent", "attachment", row.id);
   return c.json({ ok: true });
 });
 

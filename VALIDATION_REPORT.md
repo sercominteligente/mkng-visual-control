@@ -1,28 +1,19 @@
-# Relatório de validação — MKNG Visual Control 0.3.0
+# Relatório de validação técnica - v0.4.0
 
-## Validações executadas
+## Escopo validado
 
-- Sintaxe TypeScript/TSX processada em todos os arquivos da pasta `src` sem erros de parser.
-- Migrações `0001` a `0004` aplicadas em banco SQLite de teste.
-- Migração `0004_orders_branding_maintenance.sql` validada com pedido existente e criação do snapshot legado.
-- Estrutura final confirmada com 19 tabelas, incluindo `order_events`.
-- Configuração do D1 e R2 preservada no projeto completo.
+- Sintaxe de todos os arquivos TypeScript e TSX.
+- Rotas de baixa por quantidade e cálculo por m².
+- Regras de quantidade inteira para unidades indivisíveis.
+- Rotas de exclusão definitiva protegidas por `requireSuperAdmin()`.
+- Reversão de movimentações de estoque em exclusões.
+- Exibição das medidas recomendadas para logotipos e favicon.
+- Integridade do `wrangler.jsonc` preservada no pacote completo e excluída do pacote incremental.
 
-## Funcionalidades cobertas
+## Resultado
 
-- Cancelamento com motivo e preservação de histórico.
-- Exclusão de rascunho somente por Super Administrador.
-- Limpeza controlada de dados de teste.
-- Eventos auditáveis e PDFs por movimentação.
-- Personalização de logos, favicon, textos e cores via Cloudflare R2.
-- Identidade aplicada ao login, painel e PDFs.
+A análise sintática foi concluída sem erros. A instalação local das dependências não pôde ser concluída no ambiente de geração por indisponibilidade do registro de pacotes. O build definitivo deve ser confirmado pelo pipeline da Cloudflare após o upload no GitHub.
 
-## Observação de implantação
+## Banco de dados
 
-A Cloudflare deverá executar automaticamente a migração `0004` porque o comando de implantação já utiliza:
-
-```bash
-npx wrangler d1 migrations apply DB --remote && npx wrangler deploy
-```
-
-Após o build verde, atualizar o navegador com `Ctrl + F5` e validar primeiro a exclusão de um rascunho de teste e o envio do logotipo do painel.
+A versão 0.4.0 não exige migração adicional. É esperado que o Wrangler informe `No migrations to apply`.

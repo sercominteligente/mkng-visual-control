@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { ApiError, api, brl } from "../lib/api";
 import { Modal } from "../components/Modal";
 import { Badge, EmptyState, Field, Loading, PageHeader, StatCard } from "../components/UI";
+import type { User } from "../components/Layout";
 
 type MaterialProfile = "sheet" | "roll" | "paint" | "general";
 
@@ -143,7 +144,7 @@ function clearTechnicalFields(form: MaterialForm, type: MaterialProfile): Materi
   };
 }
 
-export function MaterialsPage() {
+export function MaterialsPage({ user }: { user: User }) {
   const [items, setItems] = useState<any[]>([]);
   const [categories, setCategories] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
@@ -263,26 +264,14 @@ export function MaterialsPage() {
   };
 
   const removeMaterial = async (item: any) => {
-    if (!window.confirm(`Excluir “${item.name}”?\n\nEsta ação não poderá ser desfeita.`)) return;
-    setError("");
-    setNotice("");
+    const confirmation = window.prompt(`Excluir definitivamente “${item.name}”?\n\nSerão removidos o cadastro, vínculos com pedidos/compras e movimentações deste material. Digite EXCLUIR para confirmar.`);
+    if (confirmation !== "EXCLUIR") return;
+    setError(""); setNotice("");
     try {
       await api(`/materials/${item.id}`, { method: "DELETE" });
-      setNotice(`Material “${item.name}” excluído.`);
+      setNotice(`Material “${item.name}” excluído definitivamente.`);
       await load();
     } catch (err) {
-      if (err instanceof ApiError && err.status === 409) {
-        const deactivate = window.confirm(`${err.message}\n\nDeseja desativar este material agora?`);
-        if (deactivate) {
-          await api(`/materials/${item.id}`, {
-            method: "PUT",
-            body: JSON.stringify({ ...item, active: false }),
-          });
-          setNotice(`Material “${item.name}” desativado e preservado no histórico.`);
-          await load();
-          return;
-        }
-      }
       setError(err instanceof Error ? err.message : "Não foi possível excluir o material");
     }
   };
@@ -333,29 +322,16 @@ export function MaterialsPage() {
   };
 
   const removeCategory = async (category: any) => {
-    if (!window.confirm(`Excluir a categoria “${category.name}”?`)) return;
+    const confirmation = window.prompt(`Excluir definitivamente a categoria “${category.name}”?\n\nOs materiais vinculados ficarão sem categoria. Digite EXCLUIR para confirmar.`);
+    if (confirmation !== "EXCLUIR") return;
     setCategoryError("");
     try {
       await api(`/material-categories/${category.id}`, { method: "DELETE" });
       const categoryData = await api<{ items: any[] }>("/material-categories");
       setCategories(categoryData.items);
-      setNotice(`Categoria “${category.name}” excluída.`);
+      setNotice(`Categoria “${category.name}” excluída definitivamente.`);
       if (categoryEditing?.id === category.id) resetCategoryForm();
     } catch (err) {
-      if (err instanceof ApiError && err.status === 409) {
-        const deactivate = window.confirm(`${err.message}\n\nDeseja desativar esta categoria agora?`);
-        if (deactivate) {
-          await api(`/material-categories/${category.id}`, {
-            method: "PUT",
-            body: JSON.stringify({ ...category, active: false }),
-          });
-          const categoryData = await api<{ items: any[] }>("/material-categories");
-          setCategories(categoryData.items);
-          setNotice(`Categoria “${category.name}” desativada.`);
-          if (categoryEditing?.id === category.id) resetCategoryForm();
-          return;
-        }
-      }
       setCategoryError(err instanceof Error ? err.message : "Não foi possível excluir a categoria");
     }
   };
@@ -394,7 +370,7 @@ export function MaterialsPage() {
           <td>{formatQuantity(item.minimum_stock, item.unit)}</td>
           <td>{brl(item.average_cost)}</td>
           <td>{!active ? <Badge>Desativado</Badge> : <Badge tone={critical ? "danger" : "success"}>{critical ? "Crítico" : "OK"}</Badge>}</td>
-          <td className="actions"><button onClick={() => startEdit(item)}>Editar</button><button className="action-danger" onClick={() => void removeMaterial(item)}>Excluir</button></td>
+          <td className="actions"><button onClick={() => startEdit(item)}>Editar</button>{user.role === "super_admin" && <button className="action-danger" onClick={() => void removeMaterial(item)}>Excluir definitivamente</button>}</td>
         </tr>;
       })}</tbody></table></div>}
     </div>
@@ -467,7 +443,7 @@ export function MaterialsPage() {
           <div className="category-list">{categories.map((category) => <div className="category-list-item" key={category.id}>
             <div><strong>{category.name}</strong><small>{category.code || "Sem código"} · ordem {category.sort_order ?? 0}</small>{category.description && <p>{category.description}</p>}</div>
             <Badge tone={category.active ? "success" : "neutral"}>{category.active ? "Ativa" : "Desativada"}</Badge>
-            <div className="actions"><button onClick={() => startCategoryEdit(category)}>Editar</button><button className="action-danger" onClick={() => void removeCategory(category)}>Excluir</button></div>
+            <div className="actions"><button onClick={() => startCategoryEdit(category)}>Editar</button>{user.role === "super_admin" && <button className="action-danger" onClick={() => void removeCategory(category)}>Excluir definitivamente</button>}</div>
           </div>)}</div>
         </div>
       </div>

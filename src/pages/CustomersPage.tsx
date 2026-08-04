@@ -1,7 +1,8 @@
 import { SimpleCrudPage, statusColumn } from "./SimpleCrudPage";
+import type { User } from "../components/Layout";
 
-export function CustomersPage() {
-  return <SimpleCrudPage title="Clientes" eyebrow="CADASTROS" description="Base de clientes vinculada aos pedidos, contas a receber e relatórios." endpoint="/customers" entityName="Cliente" fields={[
+export function CustomersPage({ user }: { user: User }) {
+  return <SimpleCrudPage user={user} title="Clientes" eyebrow="CADASTROS" description="Base de clientes vinculada aos pedidos, contas a receber e relatórios." endpoint="/customers" entityName="Cliente" fields={[
     { key: "name", label: "Nome / Razão social", required: true },
     { key: "document", label: "CPF / CNPJ" },
     { key: "contact_name", label: "Contato principal" },

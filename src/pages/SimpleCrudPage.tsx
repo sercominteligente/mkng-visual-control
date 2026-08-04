@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { api } from "../lib/api";
 import { Modal } from "../components/Modal";
 import { Badge, EmptyState, Field, Loading, PageHeader } from "../components/UI";
+import type { User } from "../components/Layout";
 
 type FieldConfig = {
   key: string;
@@ -26,6 +27,7 @@ export function SimpleCrudPage({
   entityName,
   fields,
   columns,
+  user,
 }: {
   title: string;
   eyebrow: string;
@@ -34,6 +36,7 @@ export function SimpleCrudPage({
   entityName: string;
   fields: FieldConfig[];
   columns: ColumnConfig[];
+  user: User;
 }) {
   const [items, setItems] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
@@ -82,7 +85,8 @@ export function SimpleCrudPage({
   };
 
   const remove = async (item: any) => {
-    if (!window.confirm(`Excluir ${entityName.toLowerCase()} “${item.name}”?`)) return;
+    const confirmation = window.prompt(`Excluir definitivamente ${entityName.toLowerCase()} “${item.name}”?\n\nDigite EXCLUIR para confirmar.`);
+    if (confirmation !== "EXCLUIR") return;
     try {
       await api(`${endpoint}/${item.id}`, { method: "DELETE" });
       await load();
@@ -99,7 +103,7 @@ export function SimpleCrudPage({
       <div className="panel table-panel">
         {loading ? <Loading /> : items.length === 0 ? <EmptyState title={`Nenhum ${entityName.toLowerCase()} cadastrado`} text="Use o botão acima para criar o primeiro registro." /> : (
           <div className="table-wrap"><table><thead><tr>{columns.map((column) => <th key={column.key}>{column.label}</th>)}<th>Ações</th></tr></thead><tbody>{items.map((item) => (
-            <tr key={item.id}>{columns.map((column) => <td key={column.key}>{column.render ? column.render(item) : item[column.key] || "—"}</td>)}<td className="actions"><button onClick={() => startEdit(item)}>Editar</button><button className="danger-link" onClick={() => remove(item)}>Excluir</button></td></tr>
+            <tr key={item.id}>{columns.map((column) => <td key={column.key}>{column.render ? column.render(item) : item[column.key] || "—"}</td>)}<td className="actions"><button onClick={() => startEdit(item)}>Editar</button>{user.role === "super_admin" && <button className="danger-link" onClick={() => remove(item)}>Excluir definitivamente</button>}</td></tr>
           ))}</tbody></table></div>
         )}
       </div>

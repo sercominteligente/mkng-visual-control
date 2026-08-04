@@ -109,3 +109,14 @@ Consulte [DEPLOY_CLOUDFLARE.md](DEPLOY_CLOUDFLARE.md).
 A versão 0.3.0 adiciona cancelamento formal de pedidos, exclusão segura de rascunhos exclusivamente pelo Super Administrador, histórico auditável com PDFs por movimentação, personalização visual por arquivos no R2 e manutenção controlada de dados de teste.
 
 Consulte `docs/ALTERACOES_V0.3_PEDIDOS_PERSONALIZACAO.md`.
+
+
+## Versão 0.4.0
+
+- baixa de estoque corrigida para unidades inteiras, medidas decimais e m²;
+- cálculo automático de área por largura, altura e quantidade;
+- histórico de consumo e saldo atualizado em uma única operação;
+- exclusão definitiva em todos os módulos persistentes, exclusiva do Super Administrador;
+- reversão segura das movimentações ao excluir compras, pedidos ou baixas;
+- dimensões recomendadas das imagens exibidas na personalização visual;
+- nenhuma migração D1 adicional necessária.
