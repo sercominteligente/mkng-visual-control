@@ -13,7 +13,7 @@
     {
       "binding": "DB",
       "database_name": "mkng-visual-db",
-      "database_id": "SUBSTITUA_PELO_DATABASE_ID",
+      "database_id": "bdbbf38c-03c4-4a2a-b0dd-32f2cff4a6b1",
       "migrations_dir": "migrations"
     }
   ],
