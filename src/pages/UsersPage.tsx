@@ -1,0 +1,19 @@
+import { useEffect, useState } from "react";
+import { api, dateTimeBR } from "../lib/api";
+import { Modal } from "../components/Modal";
+import { Badge, EmptyState, Field, Loading, PageHeader } from "../components/UI";
+
+const roles = [
+  ["super_admin", "Super administrador"], ["admin", "Administrador"], ["manager", "Gestor"], ["production", "Produção"], ["stock", "Estoque"], ["finance", "Financeiro"], ["viewer", "Consulta"],
+] as const;
+export function UsersPage() {
+  const [items, setItems] = useState<any[]>([]); const [loading, setLoading] = useState(true); const [open, setOpen] = useState(false); const [editing, setEditing] = useState<any>(null); const [form, setForm] = useState<any>({ name: "", email: "", role: "viewer", status: "active", password: "" });
+  const load = async () => { setLoading(true); try { const data = await api<{ items: any[] }>("/users"); setItems(data.items); } finally { setLoading(false); } };
+  useEffect(() => { void load(); }, []);
+  const save = async (event: React.FormEvent) => { event.preventDefault(); await api(editing ? `/users/${editing.id}` : "/users", { method: editing ? "PUT" : "POST", body: JSON.stringify(form) }); setOpen(false); await load(); };
+  const start = (item?: any) => { setEditing(item || null); setForm(item ? { ...item, password: "" } : { name: "", email: "", role: "viewer", status: "active", password: "" }); setOpen(true); };
+  return <><PageHeader eyebrow="ACESSO E SEGURANÇA" title="Usuários e permissões" description="Controle de acesso por função para administração, produção, estoque, financeiro e consulta." action={<button className="primary-button" onClick={() => start()}>+ Novo usuário</button>} />
+    <div className="panel table-panel">{loading ? <Loading /> : items.length === 0 ? <EmptyState title="Nenhum usuário" text="Cadastre os responsáveis por cada setor." /> : <div className="table-wrap"><table><thead><tr><th>Usuário</th><th>E-mail</th><th>Função</th><th>Status</th><th>Último acesso</th><th>Ações</th></tr></thead><tbody>{items.map((item) => <tr key={item.id}><td><strong>{item.name}</strong></td><td>{item.email}</td><td>{roles.find(([key]) => key === item.role)?.[1] || item.role}</td><td><Badge tone={item.status === "active" ? "success" : "neutral"}>{item.status === "active" ? "Ativo" : "Inativo"}</Badge></td><td>{dateTimeBR(item.last_login_at)}</td><td className="actions"><button onClick={() => start(item)}>Editar</button></td></tr>)}</tbody></table></div>}</div>
+    {open && <Modal title={editing ? "Editar usuário" : "Novo usuário"} onClose={() => setOpen(false)}><form className="form-grid" onSubmit={save}><Field label="Nome"><input required value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} /></Field><Field label="E-mail"><input type="email" required value={form.email} onChange={(event) => setForm({ ...form, email: event.target.value })} /></Field><Field label="Função"><select value={form.role} onChange={(event) => setForm({ ...form, role: event.target.value })}>{roles.map(([key, label]) => <option key={key} value={key}>{label}</option>)}</select></Field><Field label="Status"><select value={form.status} onChange={(event) => setForm({ ...form, status: event.target.value })}><option value="active">Ativo</option><option value="inactive">Inativo</option></select></Field><Field label={editing ? "Nova senha (opcional)" : "Senha inicial"} wide><input type="password" required={!editing} minLength={10} value={form.password} onChange={(event) => setForm({ ...form, password: event.target.value })} /><small>Mínimo de 10 caracteres.</small></Field><div className="form-actions wide"><button type="button" className="ghost-button" onClick={() => setOpen(false)}>Cancelar</button><button className="primary-button">Salvar usuário</button></div></form></Modal>}
+  </>;
+}
