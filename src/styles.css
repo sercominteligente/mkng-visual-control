@@ -268,3 +268,27 @@ tr.clickable { cursor: pointer; }
   .report-filter { align-items: stretch; flex-direction: column; }
   .report-filter label { justify-content: space-between; }
 }
+
+/* Estoque v0.2 — categorias dinâmicas e perfis técnicos */
+.header-actions { display: flex; align-items: center; justify-content: flex-end; gap: 10px; flex-wrap: wrap; }
+.category-picker { display: grid; grid-template-columns: minmax(180px,.75fr) minmax(220px,1fr) auto; gap: 9px; align-items: center; }
+.inline-create-category { display: grid; grid-template-columns: 1fr auto; gap: 9px; margin-top: 9px; padding: 12px; border: 1px solid rgba(255,106,0,.25); border-radius: 12px; background: rgba(255,106,0,.05); }
+.type-hint { min-height: 44px; padding: 11px 12px; border: 1px solid #2d3239; border-radius: 11px; color: #b9bec6; background: #0c0e11; font-size: 12px; line-height: 1.45; }
+.check-field { display: flex; align-items: center; gap: 9px; min-height: 42px; color: #d8dbe0; font-size: 12px; }
+.check-field input { width: 18px; height: 18px; accent-color: var(--orange); }
+.actions .action-danger,.action-danger { color: #ff747b; }
+.actions .action-danger:hover,.action-danger:hover { color: #ff9ca1; }
+.row-inactive { opacity: .62; }
+.category-manager-grid { display: grid; grid-template-columns: minmax(280px,.7fr) minmax(420px,1.3fr); gap: 18px; align-items: start; }
+.category-editor,.category-list-panel { border: 1px solid #2d3239; border-radius: 15px; background: #0c0e11; padding: 16px; }
+.category-editor { display: grid; gap: 12px; }
+.category-list { display: grid; gap: 9px; max-height: 590px; overflow: auto; padding-right: 3px; }
+.category-list-item { display: grid; grid-template-columns: minmax(0,1fr) auto auto; gap: 12px; align-items: center; padding: 13px; border: 1px solid #292e35; border-radius: 12px; background: #12151a; }
+.category-list-item strong,.category-list-item small { display: block; }
+.category-list-item small { margin-top: 3px; color: var(--muted); }
+.category-list-item p { margin: 7px 0 0; color: #9da3ac; font-size: 11px; line-height: 1.45; }
+@media (max-width: 860px) {
+  .category-picker,.inline-create-category,.category-manager-grid { grid-template-columns: 1fr; }
+  .category-list-item { grid-template-columns: 1fr auto; }
+  .category-list-item .actions { grid-column: 1 / -1; }
+}

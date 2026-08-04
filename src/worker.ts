@@ -48,6 +48,27 @@ function code(prefix: string): string {
   return `${prefix}-${compact}-${suffix}`;
 }
 
+function compactToken(value: string, fallback: string): string {
+  const token = value
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toUpperCase()
+    .replace(/[^A-Z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 14);
+  return token || fallback;
+}
+
+function generatedMaterialSku(name: string): string {
+  const suffix = id().replace(/-/g, "").slice(0, 6).toUpperCase();
+  return `${compactToken(name, "MATERIAL")}-${suffix}`;
+}
+
+function materialType(value: unknown): string {
+  const candidate = String(value ?? "general");
+  return ["sheet", "roll", "paint", "general"].includes(candidate) ? candidate : "general";
+}
+
 app.onError((error, c) => {
   console.error(error);
   const message = error instanceof Error ? error.message : "Erro interno";
@@ -224,19 +245,61 @@ app.delete("/api/suppliers/:id", async (c) => {
 
 app.use("/api/materials", requirePermission("stock"));
 app.use("/api/materials/*", requirePermission("stock"));
+
 app.get("/api/material-categories", requirePermission("stock"), async (c) => {
   const result = await c.env.DB.prepare("SELECT * FROM material_categories ORDER BY sort_order, name").all<any>();
   return c.json({ items: result.results });
 });
+
 app.post("/api/material-categories", requirePermission("stock"), async (c) => {
   const data = await body<any>(c);
+  const name = data.name?.trim();
+  if (!name) return c.json({ error: "Nome da categoria é obrigatório" }, 400);
+  const duplicate = await c.env.DB.prepare("SELECT id FROM material_categories WHERE name = ? COLLATE NOCASE LIMIT 1").bind(name).first<any>();
+  if (duplicate) return c.json({ error: "Já existe uma categoria com esse nome" }, 409);
+
   const entityId = id();
-  await c.env.DB.prepare("INSERT INTO material_categories (id,name,sort_order,active) VALUES (?,?,?,?)")
-    .bind(entityId, data.name, Number(data.sort_order ?? 0), data.active === false ? 0 : 1)
+  const categoryCode = data.code?.trim() ? compactToken(data.code, "CATEGORIA") : compactToken(name, "CATEGORIA");
+  await c.env.DB.prepare(
+    "INSERT INTO material_categories (id,name,description,code,sort_order,active) VALUES (?,?,?,?,?,?)",
+  )
+    .bind(entityId, name, data.description?.trim() || null, categoryCode, Number(data.sort_order ?? 0), data.active === false ? 0 : 1)
     .run();
   await audit(c, "create", "material_category", entityId, data);
   return c.json({ id: entityId }, 201);
 });
+
+app.put("/api/material-categories/:id", requirePermission("stock"), async (c) => {
+  const data = await body<any>(c);
+  const entityId = c.req.param("id");
+  const name = data.name?.trim();
+  if (!name) return c.json({ error: "Nome da categoria é obrigatório" }, 400);
+  const duplicate = await c.env.DB.prepare(
+    "SELECT id FROM material_categories WHERE name = ? COLLATE NOCASE AND id <> ? LIMIT 1",
+  ).bind(name, entityId).first<any>();
+  if (duplicate) return c.json({ error: "Já existe uma categoria com esse nome" }, 409);
+
+  const categoryCode = data.code?.trim() ? compactToken(data.code, "CATEGORIA") : compactToken(name, "CATEGORIA");
+  await c.env.DB.prepare(
+    "UPDATE material_categories SET name=?,description=?,code=?,sort_order=?,active=? WHERE id=?",
+  )
+    .bind(name, data.description?.trim() || null, categoryCode, Number(data.sort_order ?? 0), data.active === false ? 0 : 1, entityId)
+    .run();
+  await audit(c, "update", "material_category", entityId, data);
+  return c.json({ ok: true });
+});
+
+app.delete("/api/material-categories/:id", requirePermission("stock"), async (c) => {
+  const entityId = c.req.param("id");
+  const linked = await c.env.DB.prepare("SELECT COUNT(*) AS total FROM materials WHERE category_id = ?").bind(entityId).first<any>();
+  if ((linked?.total ?? 0) > 0) {
+    return c.json({ error: "Categoria possui materiais vinculados; transfira os materiais ou desative a categoria" }, 409);
+  }
+  await c.env.DB.prepare("DELETE FROM material_categories WHERE id = ?").bind(entityId).run();
+  await audit(c, "delete", "material_category", entityId);
+  return c.json({ ok: true });
+});
+
 app.get("/api/materials", async (c) => {
   const search = c.req.query("q")?.trim() ?? "";
   const result = await c.env.DB.prepare(
@@ -244,22 +307,55 @@ app.get("/api/materials", async (c) => {
       COALESCE((SELECT SUM(MAX(om.reserved_qty - om.consumed_qty + om.returned_qty, 0)) FROM order_materials om JOIN orders o ON o.id=om.order_id WHERE om.material_id=m.id AND o.status NOT IN ('completed','cancelled')),0) AS reserved_stock
      FROM materials m LEFT JOIN material_categories c ON c.id=m.category_id
      WHERE m.name LIKE ? OR COALESCE(m.sku,'') LIKE ? OR COALESCE(c.name,'') LIKE ?
-     ORDER BY c.sort_order, m.name`,
+     ORDER BY m.active DESC, c.sort_order, m.name`,
   )
     .bind(`%${search}%`, `%${search}%`, `%${search}%`)
     .all<any>();
   return c.json({ items: result.results });
 });
+
 app.post("/api/materials", async (c) => {
   const data = await body<any>(c);
-  if (!data.name?.trim()) return c.json({ error: "Nome do material é obrigatório" }, 400);
+  const name = data.name?.trim();
+  if (!name) return c.json({ error: "Nome do material é obrigatório" }, 400);
+
+  const sku = data.sku?.trim() || generatedMaterialSku(name);
+  const duplicateSku = await c.env.DB.prepare("SELECT id FROM materials WHERE sku = ? COLLATE NOCASE LIMIT 1").bind(sku).first<any>();
+  if (duplicateSku) return c.json({ error: "Já existe um material com esse SKU" }, 409);
+
   const entityId = id();
   await c.env.DB.prepare(
-    `INSERT INTO materials (id,category_id,sku,name,description,unit,thickness_mm,width_mm,height_mm,current_stock,minimum_stock,average_cost,location,active)
-     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+    `INSERT INTO materials (
+      id,category_id,sku,name,description,unit,material_type,
+      thickness_mm,width_mm,height_mm,grammage_gsm,length_m,volume_l,color,finish,package_size,
+      current_stock,minimum_stock,average_cost,location,active
+    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
   )
-    .bind(entityId, data.category_id ?? null, data.sku || null, data.name.trim(), data.description ?? null, data.unit ?? "un", quantity(data.thickness_mm) || null, quantity(data.width_mm) || null, quantity(data.height_mm) || null, quantity(data.current_stock), quantity(data.minimum_stock), money(data.average_cost), data.location ?? null, data.active === false ? 0 : 1)
+    .bind(
+      entityId,
+      data.category_id || null,
+      sku,
+      name,
+      data.description?.trim() || null,
+      data.unit ?? "un",
+      materialType(data.material_type),
+      quantity(data.thickness_mm) || null,
+      quantity(data.width_mm) || null,
+      quantity(data.height_mm) || null,
+      quantity(data.grammage_gsm) || null,
+      quantity(data.length_m) || null,
+      quantity(data.volume_l) || null,
+      data.color?.trim() || null,
+      data.finish?.trim() || null,
+      data.package_size?.trim() || null,
+      quantity(data.current_stock),
+      quantity(data.minimum_stock),
+      money(data.average_cost),
+      data.location?.trim() || null,
+      data.active === false ? 0 : 1,
+    )
     .run();
+
   if (quantity(data.current_stock) !== 0) {
     await c.env.DB.prepare(
       "INSERT INTO stock_movements (id,material_id,type,quantity,unit_cost,total_cost,notes,user_id) VALUES (?,?,?,?,?,?,?,?)",
@@ -267,24 +363,78 @@ app.post("/api/materials", async (c) => {
       .bind(id(), entityId, "opening", quantity(data.current_stock), money(data.average_cost), money(data.current_stock) * money(data.average_cost), "Saldo inicial", c.get("user").id)
       .run();
   }
-  await audit(c, "create", "material", entityId, data);
-  return c.json({ id: entityId }, 201);
+  await audit(c, "create", "material", entityId, { ...data, sku });
+  return c.json({ id: entityId, sku }, 201);
 });
+
 app.put("/api/materials/:id", async (c) => {
   const data = await body<any>(c);
+  const entityId = c.req.param("id");
+  const name = data.name?.trim();
+  if (!name) return c.json({ error: "Nome do material é obrigatório" }, 400);
+
+  const sku = data.sku?.trim() || generatedMaterialSku(name);
+  const duplicateSku = await c.env.DB.prepare(
+    "SELECT id FROM materials WHERE sku = ? COLLATE NOCASE AND id <> ? LIMIT 1",
+  ).bind(sku, entityId).first<any>();
+  if (duplicateSku) return c.json({ error: "Já existe outro material com esse SKU" }, 409);
+
   await c.env.DB.prepare(
-    `UPDATE materials SET category_id=?,sku=?,name=?,description=?,unit=?,thickness_mm=?,width_mm=?,height_mm=?,minimum_stock=?,average_cost=?,location=?,active=?,updated_at=? WHERE id=?`,
+    `UPDATE materials SET
+      category_id=?,sku=?,name=?,description=?,unit=?,material_type=?,
+      thickness_mm=?,width_mm=?,height_mm=?,grammage_gsm=?,length_m=?,volume_l=?,color=?,finish=?,package_size=?,
+      minimum_stock=?,average_cost=?,location=?,active=?,updated_at=?
+     WHERE id=?`,
   )
-    .bind(data.category_id ?? null, data.sku || null, data.name, data.description ?? null, data.unit ?? "un", quantity(data.thickness_mm) || null, quantity(data.width_mm) || null, quantity(data.height_mm) || null, quantity(data.minimum_stock), money(data.average_cost), data.location ?? null, data.active === false ? 0 : 1, now(), c.req.param("id"))
+    .bind(
+      data.category_id || null,
+      sku,
+      name,
+      data.description?.trim() || null,
+      data.unit ?? "un",
+      materialType(data.material_type),
+      quantity(data.thickness_mm) || null,
+      quantity(data.width_mm) || null,
+      quantity(data.height_mm) || null,
+      quantity(data.grammage_gsm) || null,
+      quantity(data.length_m) || null,
+      quantity(data.volume_l) || null,
+      data.color?.trim() || null,
+      data.finish?.trim() || null,
+      data.package_size?.trim() || null,
+      quantity(data.minimum_stock),
+      money(data.average_cost),
+      data.location?.trim() || null,
+      data.active === false ? 0 : 1,
+      now(),
+      entityId,
+    )
     .run();
-  await audit(c, "update", "material", c.req.param("id"), data);
-  return c.json({ ok: true });
+  await audit(c, "update", "material", entityId, { ...data, sku });
+  return c.json({ ok: true, sku });
 });
+
 app.delete("/api/materials/:id", async (c) => {
   const entityId = c.req.param("id");
-  const linked = await c.env.DB.prepare("SELECT COUNT(*) AS total FROM stock_movements WHERE material_id = ?").bind(entityId).first<any>();
-  if ((linked?.total ?? 0) > 0) return c.json({ error: "Material possui movimentações; desative-o em vez de excluir" }, 409);
-  await c.env.DB.prepare("DELETE FROM materials WHERE id = ?").bind(entityId).run();
+  const [movements, purchases, orders] = await Promise.all([
+    c.env.DB.prepare(
+      "SELECT COUNT(*) AS total, SUM(CASE WHEN type <> 'opening' THEN 1 ELSE 0 END) AS protected FROM stock_movements WHERE material_id = ?",
+    ).bind(entityId).first<any>(),
+    c.env.DB.prepare("SELECT COUNT(*) AS total FROM purchase_items WHERE material_id = ?").bind(entityId).first<any>(),
+    c.env.DB.prepare("SELECT COUNT(*) AS total FROM order_materials WHERE material_id = ?").bind(entityId).first<any>(),
+  ]);
+
+  const hasOperationalHistory = Number(movements?.protected ?? 0) > 0 || Number(purchases?.total ?? 0) > 0 || Number(orders?.total ?? 0) > 0;
+  if (hasOperationalHistory) {
+    return c.json({ error: "Material possui histórico operacional; desative-o para preservar estoque, pedidos e relatórios" }, 409);
+  }
+
+  const statements = [];
+  if (Number(movements?.total ?? 0) > 0) {
+    statements.push(c.env.DB.prepare("DELETE FROM stock_movements WHERE material_id = ? AND type = 'opening'").bind(entityId));
+  }
+  statements.push(c.env.DB.prepare("DELETE FROM materials WHERE id = ?").bind(entityId));
+  await c.env.DB.batch(statements);
   await audit(c, "delete", "material", entityId);
   return c.json({ ok: true });
 });
