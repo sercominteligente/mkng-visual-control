@@ -166,7 +166,7 @@ async function loadOrderSnapshot(c: any, orderId: string): Promise<any | null> {
       WHERE o.id=?`,
   ).bind(orderId).first<any>();
   if (!order) return null;
-  const [items, materials, steps] = await Promise.all([
+  const [items, materials, steps, losses] = await Promise.all([
     c.env.DB.prepare("SELECT * FROM order_items WHERE order_id=? ORDER BY rowid").bind(orderId).all<any>(),
     c.env.DB.prepare(
       `SELECT om.*,m.name AS material_name,m.unit,m.current_stock
@@ -178,8 +178,17 @@ async function loadOrderSnapshot(c: any, orderId: string): Promise<any | null> {
          FROM production_steps ps LEFT JOIN users u ON u.id=ps.assignee_id
         WHERE ps.order_id=? ORDER BY ps.created_at`,
     ).bind(orderId).all<any>(),
+    c.env.DB.prepare(
+      `SELECT ml.*,m.name AS material_name,m.average_cost,
+              ABS(ml.quantity*m.average_cost) AS total_cost,
+              u.name AS created_by_name
+         FROM material_losses ml
+         JOIN materials m ON m.id=ml.material_id
+         LEFT JOIN users u ON u.id=ml.created_by
+        WHERE ml.order_id=? ORDER BY ml.created_at DESC`,
+    ).bind(orderId).all<any>(),
   ]);
-  return { order, items: items.results, materials: materials.results, steps: steps.results };
+  return { order, items: items.results, materials: materials.results, steps: steps.results, losses: losses.results };
 }
 
 async function pendingOrderMaterials(env: AppEnv["Bindings"], orderId: string): Promise<any[]> {
@@ -214,6 +223,24 @@ function financeStatus(amountValue: unknown, receivedValue: unknown, dueDate?: s
 function paymentMethodLabel(value: unknown): string {
   const labels: Record<string, string> = { pix: "PIX", cash: "Espécie", card: "Cartão", transfer: "Transferência" };
   return labels[String(value ?? "")] ?? "Não informado";
+}
+
+function lossTypeLabel(value: unknown): string {
+  const labels: Record<string, string> = {
+    operational: "Perda operacional",
+    setup: "Configuração / calibração",
+    human_error: "Erro humano",
+    material_defect: "Defeito do material",
+    scrap: "Sobra não reaproveitável",
+  };
+  return labels[String(value ?? "")] ?? String(value ?? "Perda");
+}
+
+function productionStageLabel(value: unknown): string {
+  const labels: Record<string, string> = {
+    briefing: "Briefing", design: "Criação / arte", printing: "Impressão", finishing: "Acabamento", installation: "Instalação", other: "Outra etapa",
+  };
+  return labels[String(value ?? "")] ?? String(value ?? "—");
 }
 
 async function pendingMaterialsForAutoConsumption(env: AppEnv["Bindings"], orderId: string): Promise<any[]> {
@@ -628,11 +655,15 @@ app.delete("/api/materials/:id", requireSuperAdmin(), async (c) => {
   const material = await c.env.DB.prepare("SELECT id,name,sku FROM materials WHERE id=?").bind(entityId).first<any>();
   if (!material) return c.json({ error: "Material não encontrado" }, 404);
   const keys = await attachmentKeys(c.env, "material", entityId);
+  const losses = await c.env.DB.prepare("SELECT id FROM material_losses WHERE material_id=?").bind(entityId).all<any>();
+  for (const loss of losses.results) keys.push(...await attachmentKeys(c.env, "loss", loss.id));
   const affectedPurchases = await c.env.DB.prepare("SELECT DISTINCT purchase_id FROM purchase_items WHERE material_id=?").bind(entityId).all<any>();
   const statements: D1PreparedStatement[] = [
     c.env.DB.prepare("DELETE FROM purchase_items WHERE material_id=?").bind(entityId),
     c.env.DB.prepare("DELETE FROM order_materials WHERE material_id=?").bind(entityId),
     c.env.DB.prepare("DELETE FROM stock_movements WHERE material_id=?").bind(entityId),
+    c.env.DB.prepare("DELETE FROM attachments WHERE entity_type='loss' AND entity_id IN (SELECT id FROM material_losses WHERE material_id=?)").bind(entityId),
+    c.env.DB.prepare("DELETE FROM material_losses WHERE material_id=?").bind(entityId),
     c.env.DB.prepare("DELETE FROM attachments WHERE entity_type='material' AND entity_id=?").bind(entityId),
     c.env.DB.prepare("DELETE FROM materials WHERE id=?").bind(entityId),
   ];
@@ -1086,9 +1117,12 @@ app.delete("/api/orders/:id", requireSuperAdmin(), async (c) => {
     statements.push(c.env.DB.prepare("UPDATE materials SET current_stock=?,updated_at=? WHERE id=?").bind(newStock, now(), row.material_id));
   }
   const keys = await attachmentKeys(c.env, "order", orderId);
+  const losses = await c.env.DB.prepare("SELECT id FROM material_losses WHERE order_id=?").bind(orderId).all<any>();
+  for (const loss of losses.results) keys.push(...await attachmentKeys(c.env, "loss", loss.id));
   statements.push(
     c.env.DB.prepare("DELETE FROM stock_movements WHERE order_id=?").bind(orderId),
     c.env.DB.prepare("DELETE FROM receivables WHERE order_id=?").bind(orderId),
+    c.env.DB.prepare("DELETE FROM attachments WHERE entity_type='loss' AND entity_id IN (SELECT id FROM material_losses WHERE order_id=?)").bind(orderId),
     c.env.DB.prepare("DELETE FROM attachments WHERE entity_type='order' AND entity_id=?").bind(orderId),
     c.env.DB.prepare("DELETE FROM orders WHERE id=?").bind(orderId),
   );
@@ -1096,6 +1130,168 @@ app.delete("/api/orders/:id", requireSuperAdmin(), async (c) => {
   await deleteR2Keys(c.env, keys);
   await audit(c, "delete_permanent", "order", orderId, { code: order.code, title: order.title, status: order.status, stockReversed: movements.results.length });
   return c.json({ ok: true });
+});
+
+
+app.use("/api/losses", requirePermission("stock"));
+app.use("/api/losses/*", requirePermission("stock"));
+app.get("/api/losses", async (c) => {
+  const from = c.req.query("from") || "2000-01-01";
+  const to = c.req.query("to") || "2999-12-31";
+  const orderId = c.req.query("orderId");
+  const whereOrder = orderId ? "AND ml.order_id=?" : "";
+  const statement = c.env.DB.prepare(
+    `SELECT ml.*,m.name AS material_name,m.average_cost,
+            ABS(ml.quantity*m.average_cost) AS total_cost,
+            o.code AS order_code,o.title AS order_title,
+            u.name AS created_by_name,ru.name AS reversed_by_name
+       FROM material_losses ml
+       JOIN materials m ON m.id=ml.material_id
+       LEFT JOIN orders o ON o.id=ml.order_id
+       LEFT JOIN users u ON u.id=ml.created_by
+       LEFT JOIN users ru ON ru.id=ml.reversed_by
+      WHERE date(ml.created_at) BETWEEN ? AND ? ${whereOrder}
+      ORDER BY ml.created_at DESC`,
+  );
+  const result = orderId ? await statement.bind(from, to, orderId).all<any>() : await statement.bind(from, to).all<any>();
+  const confirmed = result.results.filter((item) => item.status === "confirmed");
+  const reasonCounts = new Map<string, number>();
+  const machineCounts = new Map<string, number>();
+  const operatorCounts = new Map<string, number>();
+  for (const item of confirmed) {
+    reasonCounts.set(String(item.reason), (reasonCounts.get(String(item.reason)) || 0) + 1);
+    if (String(item.machine || "").trim()) machineCounts.set(String(item.machine).trim(), (machineCounts.get(String(item.machine).trim()) || 0) + 1);
+    if (String(item.created_by_name || "").trim()) operatorCounts.set(String(item.created_by_name).trim(), (operatorCounts.get(String(item.created_by_name).trim()) || 0) + 1);
+  }
+  const mostFrequent = (values: Map<string, number>) => [...values.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] || "—";
+  return c.json({
+    items: result.results.map((item) => ({ ...item, stage_label: productionStageLabel(item.stage) })),
+    stats: {
+      total: confirmed.length,
+      totalCost: money(confirmed.reduce((sum, item) => sum + Math.abs(Number(item.total_cost || 0)), 0)),
+      reprints: confirmed.filter((item) => Number(item.requires_reprint) === 1).length,
+      topReason: mostFrequent(reasonCounts),
+      topMachine: mostFrequent(machineCounts),
+      topOperator: mostFrequent(operatorCounts),
+    },
+  });
+});
+
+app.post("/api/losses", async (c) => {
+  const data = await body<any>(c);
+  if (!data.material_id) return c.json({ error: "Selecione o material perdido" }, 400);
+  const allowedTypes = new Set(["operational", "setup", "human_error", "material_defect", "scrap"]);
+  const lossType = String(data.loss_type || "operational");
+  if (!allowedTypes.has(lossType)) return c.json({ error: "Tipo de perda inválido" }, 400);
+  const reason = String(data.reason || "").trim();
+  if (!reason) return c.json({ error: "Informe o motivo da perda" }, 400);
+
+  const material = await c.env.DB.prepare("SELECT id,name,unit,current_stock,average_cost FROM materials WHERE id=?").bind(data.material_id).first<any>();
+  if (!material) return c.json({ error: "Material não encontrado" }, 404);
+  let resolved: { quantity: number; detail: string };
+  try { resolved = resolveConsumptionQuantity(data, material); }
+  catch (error) { return c.json({ error: error instanceof Error ? error.message : "Quantidade inválida" }, 400); }
+  const lossQty = resolved.quantity;
+  const currentStock = quantity(material.current_stock);
+  if (currentStock < lossQty) return c.json({ error: `Estoque insuficiente de ${material.name}. Disponível: ${currentStock} ${stockUnitLabel(material.unit, currentStock)}` }, 409);
+  const newStock = quantity(currentStock - lossQty);
+
+  const orderId = data.order_id ? String(data.order_id) : null;
+  let order: any = null;
+  let newReserved = 0;
+  let oldConsumed = 0;
+  const requiresReprint = Boolean(data.requires_reprint);
+  const reprintQty = requiresReprint ? quantity(data.reprint_qty || lossQty) : 0;
+  if (requiresReprint && reprintQty <= 0) return c.json({ error: "Informe a quantidade necessária para reimpressão" }, 400);
+  if (["un", "chapa", "rolo", "lata", "kit", "pct"].includes(String(material.unit)) && requiresReprint && !Number.isInteger(reprintQty)) {
+    return c.json({ error: `A reimpressão em ${stockUnitLabel(material.unit, 2)} exige quantidade inteira` }, 400);
+  }
+
+  if (orderId) {
+    order = await c.env.DB.prepare("SELECT id,code,title,status FROM orders WHERE id=?").bind(orderId).first<any>();
+    if (!order) return c.json({ error: "Pedido / OS não encontrado" }, 404);
+    if (["cancelled", "completed"].includes(order.status)) return c.json({ error: "Não é possível registrar perda em pedido cancelado ou concluído" }, 409);
+    const relation = await c.env.DB.prepare("SELECT reserved_qty,consumed_qty FROM order_materials WHERE order_id=? AND material_id=?").bind(orderId, material.id).first<any>();
+    const oldReserved = quantity(relation?.reserved_qty);
+    oldConsumed = quantity(relation?.consumed_qty);
+    newReserved = quantity(Math.max(oldReserved - lossQty, oldConsumed) + reprintQty);
+    const otherReservedRow = await c.env.DB.prepare(
+      `SELECT COALESCE(SUM(MAX(om.reserved_qty-om.consumed_qty,0)),0) AS total
+         FROM order_materials om JOIN orders o ON o.id=om.order_id
+        WHERE om.material_id=? AND om.order_id<>? AND o.status NOT IN ('completed','cancelled')`,
+    ).bind(material.id, orderId).first<any>();
+    const requiredReserved = quantity(otherReservedRow?.total) + quantity(Math.max(newReserved - oldConsumed, 0));
+    if (newStock < requiredReserved) {
+      return c.json({ error: `A perda pode ser baixada, mas não há saldo suficiente para manter a reimpressão reservada. Saldo após perda: ${newStock} ${stockUnitLabel(material.unit, newStock)}; reservas necessárias: ${requiredReserved} ${stockUnitLabel(material.unit, requiredReserved)}.` }, 409);
+    }
+  }
+
+  const lossId = id();
+  const createdAt = now();
+  const note = `${lossTypeLabel(lossType)}: ${reason} | ${resolved.detail}${data.machine ? ` | Máquina: ${data.machine}` : ""}${requiresReprint ? ` | Reimpressão reservada: ${reprintQty} ${stockUnitLabel(material.unit, reprintQty)}` : ""}`;
+  const statements: D1PreparedStatement[] = [
+    c.env.DB.prepare("UPDATE materials SET current_stock=?,updated_at=? WHERE id=?").bind(newStock, createdAt, material.id),
+    c.env.DB.prepare(
+      `INSERT INTO material_losses
+       (id,order_id,material_id,quantity,unit,loss_type,reason,stage,machine,requires_reprint,reprint_qty,notes,status,created_by,created_at)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+    ).bind(lossId, orderId, material.id, lossQty, material.unit, lossType, reason, data.stage || null, data.machine?.trim() || null, requiresReprint ? 1 : 0, reprintQty, data.notes?.trim() || null, "confirmed", c.get("user").id, createdAt),
+    c.env.DB.prepare(
+      "INSERT INTO stock_movements (id,material_id,type,quantity,unit_cost,total_cost,order_id,notes,user_id,created_at) VALUES (?,?,?,?,?,?,?,?,?,?)",
+    ).bind(id(), material.id, "loss", -lossQty, money(material.average_cost), -money(lossQty * material.average_cost), orderId, note, c.get("user").id, createdAt),
+  ];
+  if (orderId) {
+    statements.push(c.env.DB.prepare(
+      `INSERT INTO order_materials (id,order_id,material_id,planned_qty,reserved_qty,consumed_qty,loss_qty,reprint_qty)
+       VALUES (?,?,?,?,?,?,?,?)
+       ON CONFLICT(order_id,material_id) DO UPDATE SET
+         reserved_qty=excluded.reserved_qty,
+         loss_qty=order_materials.loss_qty+excluded.loss_qty,
+         reprint_qty=order_materials.reprint_qty+excluded.reprint_qty`,
+    ).bind(id(), orderId, material.id, 0, newReserved, oldConsumed, lossQty, reprintQty));
+  }
+  await c.env.DB.batch(statements);
+  await audit(c, "register_material_loss", "material_loss", lossId, { order_id: orderId, material_id: material.id, quantity: lossQty, unit: material.unit, loss_type: lossType, reason, requires_reprint: requiresReprint, reprint_qty: reprintQty, newStock });
+  if (orderId) {
+    await recordOrderEvent(c, orderId, "material_loss", `Perda registrada: ${material.name}`, order.status, `${note}. Novo saldo: ${newStock} ${stockUnitLabel(material.unit, newStock)}.`);
+  }
+  return c.json({ id: lossId, ok: true, quantity: lossQty, unit: material.unit, newStock, reprint_qty: reprintQty }, 201);
+});
+
+app.post("/api/losses/:id/reverse", requireSuperAdmin(), async (c) => {
+  const lossId = c.req.param("id");
+  const data = await body<any>(c);
+  const reversalReason = String(data.reason || "").trim();
+  if (!reversalReason) return c.json({ error: "Informe o motivo do estorno" }, 400);
+  const loss = await c.env.DB.prepare(
+    `SELECT ml.*,m.name AS material_name,m.current_stock,m.average_cost,o.code AS order_code,o.status AS order_status
+       FROM material_losses ml JOIN materials m ON m.id=ml.material_id LEFT JOIN orders o ON o.id=ml.order_id
+      WHERE ml.id=?`,
+  ).bind(lossId).first<any>();
+  if (!loss) return c.json({ error: "Perda não encontrada" }, 404);
+  if (loss.status !== "confirmed") return c.json({ error: "Esta perda já foi estornada" }, 409);
+  const qty = quantity(loss.quantity);
+  const reprintQty = quantity(loss.reprint_qty);
+  const newStock = quantity(loss.current_stock + qty);
+  const reversedAt = now();
+  const statements: D1PreparedStatement[] = [
+    c.env.DB.prepare("UPDATE materials SET current_stock=?,updated_at=? WHERE id=?").bind(newStock, reversedAt, loss.material_id),
+    c.env.DB.prepare("UPDATE material_losses SET status='reversed',reversal_reason=?,reversed_at=?,reversed_by=? WHERE id=?").bind(reversalReason, reversedAt, c.get("user").id, lossId),
+    c.env.DB.prepare(
+      "INSERT INTO stock_movements (id,material_id,type,quantity,unit_cost,total_cost,order_id,notes,user_id,created_at) VALUES (?,?,?,?,?,?,?,?,?,?)",
+    ).bind(id(), loss.material_id, "loss_reversal", qty, money(loss.average_cost), money(qty * loss.average_cost), loss.order_id || null, `Estorno da perda: ${reversalReason}`, c.get("user").id, reversedAt),
+  ];
+  if (loss.order_id) {
+    const relation = await c.env.DB.prepare("SELECT reserved_qty,consumed_qty FROM order_materials WHERE order_id=? AND material_id=?").bind(loss.order_id, loss.material_id).first<any>();
+    const restoredReserved = quantity(Math.max(quantity(relation?.reserved_qty) - reprintQty + qty, quantity(relation?.consumed_qty)));
+    statements.push(c.env.DB.prepare(
+      "UPDATE order_materials SET reserved_qty=?,loss_qty=MAX(loss_qty-?,0),reprint_qty=MAX(reprint_qty-?,0) WHERE order_id=? AND material_id=?",
+    ).bind(restoredReserved, qty, reprintQty, loss.order_id, loss.material_id));
+  }
+  await c.env.DB.batch(statements);
+  await audit(c, "reverse_material_loss", "material_loss", lossId, { reason: reversalReason, quantity: qty, newStock });
+  if (loss.order_id) await recordOrderEvent(c, loss.order_id, "material_loss_reversed", `Perda estornada: ${loss.material_name}`, loss.order_status, `${qty} ${stockUnitLabel(loss.unit, qty)} devolvidos ao estoque. Motivo: ${reversalReason}`);
+  return c.json({ ok: true, newStock });
 });
 
 
@@ -1396,7 +1592,7 @@ app.get("/api/settings/test-data/preview", requireSuperAdmin(), async (c) => {
     c.env.DB.prepare(`SELECT COUNT(*) AS total FROM orders o WHERE o.status='draft' AND NOT EXISTS (SELECT 1 FROM stock_movements sm WHERE sm.order_id=o.id) AND NOT EXISTS (SELECT 1 FROM receivables r WHERE r.order_id=o.id)`).first<any>(),
     c.env.DB.prepare(`SELECT COUNT(*) AS total FROM purchases p WHERE p.status='draft' AND NOT EXISTS (SELECT 1 FROM stock_movements sm WHERE sm.purchase_id=p.id)`).first<any>(),
     c.env.DB.prepare(`SELECT COUNT(*) AS total FROM customers c WHERE ${testNamePredicate} AND NOT EXISTS (SELECT 1 FROM orders o WHERE o.customer_id=c.id)`).first<any>(),
-    c.env.DB.prepare(`SELECT COUNT(*) AS total FROM materials m WHERE ${testNamePredicate} AND m.current_stock=0 AND NOT EXISTS (SELECT 1 FROM stock_movements sm WHERE sm.material_id=m.id) AND NOT EXISTS (SELECT 1 FROM order_materials om WHERE om.material_id=m.id) AND NOT EXISTS (SELECT 1 FROM purchase_items pi WHERE pi.material_id=m.id)`).first<any>(),
+    c.env.DB.prepare(`SELECT COUNT(*) AS total FROM materials m WHERE ${testNamePredicate} AND m.current_stock=0 AND NOT EXISTS (SELECT 1 FROM stock_movements sm WHERE sm.material_id=m.id) AND NOT EXISTS (SELECT 1 FROM order_materials om WHERE om.material_id=m.id) AND NOT EXISTS (SELECT 1 FROM purchase_items pi WHERE pi.material_id=m.id) AND NOT EXISTS (SELECT 1 FROM material_losses ml WHERE ml.material_id=m.id)`).first<any>(),
     c.env.DB.prepare("SELECT COUNT(*) AS total FROM receivables WHERE status='draft'").first<any>(),
     c.env.DB.prepare("SELECT COUNT(*) AS total FROM payables WHERE status='draft'").first<any>(),
   ]);
@@ -1436,7 +1632,7 @@ app.post("/api/settings/test-data/cleanup", requireSuperAdmin(), async (c) => {
     deleted.testCustomers = rows.results.length;
   }
   if (data.testMaterials) {
-    const rows = await c.env.DB.prepare(`SELECT m.id FROM materials m WHERE ${testNamePredicate} AND m.current_stock=0 AND NOT EXISTS (SELECT 1 FROM stock_movements sm WHERE sm.material_id=m.id) AND NOT EXISTS (SELECT 1 FROM order_materials om WHERE om.material_id=m.id) AND NOT EXISTS (SELECT 1 FROM purchase_items pi WHERE pi.material_id=m.id)`).all<any>();
+    const rows = await c.env.DB.prepare(`SELECT m.id FROM materials m WHERE ${testNamePredicate} AND m.current_stock=0 AND NOT EXISTS (SELECT 1 FROM stock_movements sm WHERE sm.material_id=m.id) AND NOT EXISTS (SELECT 1 FROM order_materials om WHERE om.material_id=m.id) AND NOT EXISTS (SELECT 1 FROM purchase_items pi WHERE pi.material_id=m.id) AND NOT EXISTS (SELECT 1 FROM material_losses ml WHERE ml.material_id=m.id)`).all<any>();
     for (const row of rows.results) statements.push(c.env.DB.prepare("DELETE FROM materials WHERE id=?").bind(row.id));
     deleted.testMaterials = rows.results.length;
   }
@@ -1497,7 +1693,7 @@ app.use("/api/reports", requirePermission("reports"));
 app.use("/api/reports/*", requirePermission("reports"));
 app.get("/api/reports/:type/pdf", async (c) => {
   const type = c.req.param("type");
-  const allowedTypes = new Set(["orders", "stock", "movements", "finance"]);
+  const allowedTypes = new Set(["orders", "stock", "movements", "finance", "losses"]);
   if (!allowedTypes.has(type)) return c.json({ error: "Tipo de relatório inválido" }, 404);
   const from = c.req.query("from") || "2000-01-01";
   const to = c.req.query("to") || "2999-12-31";
@@ -1558,6 +1754,43 @@ app.get("/api/reports/:type/pdf", async (c) => {
         { label: "Saldo", width: 75, value: (r) => money(r.balance).toLocaleString("pt-BR", { style: "currency", currency: "BRL" }) },
         { label: "Forma", width: 80, value: (r) => r.method },
         { label: "Status", width: 65, value: (r) => r.status },
+      ],
+      brand,
+    });
+  } else if (type === "losses") {
+    const result = await c.env.DB.prepare(
+      `SELECT ml.*,m.name AS material_name,m.average_cost,o.code AS order_code,o.title AS order_title,u.name AS user_name
+         FROM material_losses ml
+         JOIN materials m ON m.id=ml.material_id
+         LEFT JOIN orders o ON o.id=ml.order_id
+         LEFT JOIN users u ON u.id=ml.created_by
+        WHERE date(ml.created_at) BETWEEN ? AND ? ORDER BY ml.created_at DESC`,
+    ).bind(from, to).all<any>();
+    const confirmed = result.results.filter((row: any) => row.status === "confirmed");
+    const totalCost = confirmed.reduce((sum: number, row: any) => sum + money(quantity(row.quantity) * money(row.average_cost)), 0);
+    pdf = await buildReportPdf({
+      title: "Perdas e Reimpressões",
+      subtitle: `Período de ${from} a ${to}`,
+      rows: result.results,
+      summary: [
+        `Perdas confirmadas: ${confirmed.length}`,
+        `Custo estimado: ${totalCost.toLocaleString("pt-BR", { style: "currency", currency: "BRL" })}`,
+        `Reimpressões solicitadas: ${confirmed.filter((row: any) => Number(row.requires_reprint) === 1).length}`,
+        `Motivo mais frequente: ${(() => { const counts = new Map<string, number>(); for (const row of confirmed) counts.set(String(row.reason), (counts.get(String(row.reason)) || 0) + 1); return [...counts.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] || "—"; })()}`,
+      ],
+      columns: [
+        { label: "Data", width: 90, value: (r) => String(r.created_at).replace("T", " ").slice(0, 16) },
+        { label: "Pedido / OS", width: 100, value: (r) => r.order_code || "Perda geral" },
+        { label: "Material", width: 130, value: (r) => r.material_name },
+        { label: "Tipo", width: 105, value: (r) => lossTypeLabel(r.loss_type) },
+        { label: "Quantidade", width: 75, value: (r) => `${r.quantity} ${r.unit}` },
+        { label: "Custo", width: 70, value: (r) => money(quantity(r.quantity) * money(r.average_cost)).toLocaleString("pt-BR", { style: "currency", currency: "BRL" }) },
+        { label: "Etapa", width: 65, value: (r) => productionStageLabel(r.stage) },
+        { label: "Máquina", width: 75, value: (r) => r.machine || "—" },
+        { label: "Operador", width: 75, value: (r) => r.user_name || "—" },
+        { label: "Motivo", width: 115, value: (r) => r.reason },
+        { label: "Reimpressão", width: 75, value: (r) => Number(r.requires_reprint) === 1 ? `${r.reprint_qty} ${r.unit}` : "Não" },
+        { label: "Status", width: 60, value: (r) => r.status === "confirmed" ? "Confirmada" : "Estornada" },
       ],
       brand,
     });

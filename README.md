@@ -6,13 +6,14 @@ Sistema interno para gestão de demandas, pedidos, produção, estoque, compras,
 
 ## Versão atual
 
-**v0.2.0 — Estoque e materiais aprimorados**
+**v0.5.0 — Perdas, reimpressões e custo real do Job**
 
-- Categorias dinâmicas e administráveis.
-- Perfis técnicos para chapas, rolos, tintas e insumos.
-- Gramatura, comprimento de rolo, volume, cor, acabamento e embalagem.
-- SKU automático e exclusão segura.
-- Disponibilidade calculada com reservas.
+- Baixa imediata de materiais desperdiçados.
+- Registro por unidade, metro, litro, kg, rolo, chapa ou m².
+- Tipos, motivos, máquinas, operadores e etapas da perda.
+- Reimpressão vinculada ao Pedido/OS e nova reserva de material.
+- Estorno auditável exclusivo do Super Administrador.
+- Indicadores e relatórios PDF de desperdícios.
 
 ## Estado do projeto
 
@@ -32,6 +33,9 @@ Esta entrega corresponde à **V1 Beta funcional**. A estrutura, banco, APIs, tel
 - Baixa somente após confirmação do consumo.
 - Devolução de sobras ao estoque.
 - Ajustes manuais auditados.
+- Gestão de perdas operacionais, calibração, erro humano, defeito e refugo.
+- Reimpressões vinculadas ao Job e ao estoque reservado.
+- Estorno de perdas com justificativa e trilha de auditoria.
 - Produção em etapas: briefing, criação, impressão, acabamento, instalação e conclusão.
 - Contas a receber e a pagar.
 - Anexos em Cloudflare R2.
@@ -135,3 +139,19 @@ Consulte `docs/ALTERACOES_V0.3_PEDIDOS_PERSONALIZACAO.md`.
 - contas a receber com entrada/sinal, data, PIX, espécie, cartão ou transferência;
 - registro de pagamentos posteriores e recibo em PDF;
 - migração D1 `0005_finance_receipts.sql`.
+## Versão 0.5.0
+
+- novo módulo Perdas / Reimpressões;
+- perda geral ou vinculada a Pedido/OS;
+- baixa por unidade ou cálculo de m²;
+- classificação por motivo, etapa, máquina e operador;
+- anexos opcionais no R2;
+- reimpressão com nova reserva de material;
+- custo estimado da perda vinculado ao Job;
+- estorno auditável com devolução ao estoque;
+- indicadores por motivo, máquina e operador;
+- relatório PDF específico e seção de perdas na Ordem de Serviço;
+- migração D1 `0006_material_losses.sql`.
+
+Consulte `docs/ALTERACOES_V0.5_PERDAS_REIMPRESSOES.md`.
+

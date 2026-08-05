@@ -1,29 +1,33 @@
-# Relatório de validação técnica - v0.4.2
+# Relatório de validação técnica — v0.5.0
 
 ## Escopo validado
 
-- análise sintática de todos os arquivos TypeScript e TSX por transpile do TypeScript;
-- aplicação sequencial das migrações `0001` a `0005` em banco SQLite temporário;
-- fluxo de baixa manual por unidade e m²;
-- baixa automática de materiais pendentes ao concluir Pedido/OS;
-- rotas separadas dos quatro relatórios PDF;
-- cadastro de entrada/sinal e forma de pagamento em contas a receber;
-- registro de pagamentos adicionais e geração de recibo em PDF;
-- exclusões definitivas exclusivas do Super Administrador preservadas;
-- medidas de identidade visual preservadas: 720 × 240 px, 1200 × 1200 px e 512 × 512 px.
+- análise sintática dos arquivos TypeScript e TSX modificados por transpile do TypeScript;
+- aplicação sequencial das migrações `0001` a `0006` em banco SQLite temporário;
+- criação das colunas de perda e reimpressão em `order_materials`;
+- criação da tabela `material_losses` e de seus índices;
+- registro de perda por quantidade e por cálculo de m²;
+- baixa do saldo e criação de movimentação de estoque;
+- vínculo da perda ao Pedido/OS;
+- reserva de material para reimpressão;
+- estorno auditável com devolução ao estoque;
+- anexos de perda no Cloudflare R2;
+- módulo gerencial, indicadores e relatório PDF;
+- inclusão das perdas no PDF do Pedido/OS;
+- preservação das permissões e exclusões definitivas do Super Administrador.
 
 ## Resultado
 
-A validação sintática foi concluída sem erros. Todas as cinco migrações foram aplicadas com sucesso em SQLite temporário.
+A análise sintática dos arquivos modificados foi concluída sem erros. As seis migrações foram aplicadas com sucesso em um banco SQLite temporário, incluindo `0006_material_losses.sql`.
 
-A instalação local das dependências não pôde ser concluída porque o registro de pacotes disponível neste ambiente não contém `@types/react`. O build definitivo deverá ser confirmado pelo pipeline da Cloudflare após o commit no GitHub.
+A instalação local completa das dependências não pôde ser concluída porque o registro de pacotes disponível neste ambiente não contém `@types/react`. O build definitivo deve ser confirmado pelo pipeline da Cloudflare após o commit no GitHub.
 
 ## Banco de dados
 
-A versão 0.4.2 exige a aplicação da migração:
+Esta versão exige a migração:
 
 ```text
-0005_finance_receipts.sql
+0006_material_losses.sql
 ```
 
-O comando de implantação já configurado na Cloudflare deve aplicá-la automaticamente antes do deploy.
+O comando de implantação configurado na Cloudflare deve aplicá-la automaticamente antes do deploy.

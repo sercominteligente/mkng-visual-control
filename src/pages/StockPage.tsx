@@ -4,8 +4,8 @@ import { Modal } from "../components/Modal";
 import { Badge, EmptyState, Field, Loading, PageHeader } from "../components/UI";
 import type { User } from "../components/Layout";
 
-const labels: Record<string, string> = { purchase: "Compra", consumption: "Consumo", return: "Devolução", opening: "Saldo inicial", adjustment_in: "Ajuste +", adjustment_out: "Ajuste -" };
-const tones: Record<string, string> = { purchase: "success", consumption: "danger", return: "info", opening: "neutral", adjustment_in: "success", adjustment_out: "warning" };
+const labels: Record<string, string> = { purchase: "Compra", consumption: "Consumo", return: "Devolução", opening: "Saldo inicial", adjustment_in: "Ajuste +", adjustment_out: "Ajuste -", loss: "Perda", loss_reversal: "Estorno de perda" };
+const tones: Record<string, string> = { purchase: "success", consumption: "danger", return: "info", opening: "neutral", adjustment_in: "success", adjustment_out: "warning", loss: "danger", loss_reversal: "purple" };
 
 function numberBR(value: unknown): string {
   return Number(value ?? 0).toLocaleString("pt-BR", { maximumFractionDigits: 3 });

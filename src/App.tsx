@@ -9,6 +9,7 @@ import { ProductionPage } from "./pages/ProductionPage";
 import { MaterialsPage } from "./pages/MaterialsPage";
 import { PurchasesPage } from "./pages/PurchasesPage";
 import { StockPage } from "./pages/StockPage";
+import { LossesPage } from "./pages/LossesPage";
 import { CustomersPage } from "./pages/CustomersPage";
 import { SuppliersPage } from "./pages/SuppliersPage";
 import { FinancePage } from "./pages/FinancePage";
@@ -62,6 +63,7 @@ export function App() {
   else if (path === "/materials") page = <MaterialsPage user={user} />;
   else if (path === "/purchases") page = <PurchasesPage user={user} />;
   else if (path === "/stock") page = <StockPage user={user} />;
+  else if (path === "/losses") page = <LossesPage user={user} />;
   else if (path === "/customers") page = <CustomersPage user={user} />;
   else if (path === "/suppliers") page = <SuppliersPage user={user} />;
   else if (path === "/finance") page = <FinancePage user={user} />;

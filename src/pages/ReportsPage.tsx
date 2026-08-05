@@ -5,6 +5,7 @@ const reports = [
   { type: "orders", title: "Pedidos e produção", text: "Pedidos criados, clientes, prazos, status e valores." },
   { type: "stock", title: "Posição de estoque", text: "Saldo, estoque mínimo, custo médio e localização dos materiais." },
   { type: "movements", title: "Movimentações de estoque", text: "Entradas, consumos, devoluções e ajustes por período." },
+  { type: "losses", title: "Perdas e reimpressões", text: "Desperdícios, motivos, custos e reposições por Job, máquina e etapa." },
   { type: "finance", title: "Financeiro", text: "Contas a receber e pagar no período selecionado." },
 ];
 

@@ -12,6 +12,7 @@ const menu = [
   ["/materials", "Estoque", "▦", "stock"],
   ["/purchases", "Entradas / Compras", "↓", "purchases"],
   ["/stock", "Consumo / Baixas", "⇄", "stock"],
+  ["/losses", "Perdas / Reimpressões", "⚠", "stock"],
   ["/customers", "Clientes", "◎", "customers"],
   ["/suppliers", "Fornecedores", "◇", "suppliers"],
   ["/finance", "Financeiro", "$", "finance"],

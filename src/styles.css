@@ -132,6 +132,7 @@ tr.clickable { cursor: pointer; }
 .alert { padding: 12px 14px; border-radius: 11px; margin-bottom: 14px; border: 1px solid; }
 .alert.error { color: #ffbec2; background: rgba(255,93,100,.08); border-color: rgba(255,93,100,.32); }
 .alert.success { color: #a3f4c7; background: rgba(53,208,127,.08); border-color: rgba(53,208,127,.32); }
+.alert.warning { color: #ffd58a; background: rgba(245,185,66,.08); border-color: rgba(245,185,66,.32); }
 .text-green { color: var(--green); }.text-red { color: var(--red); }.muted { color: var(--muted); }
 .modal-backdrop { position: fixed; inset: 0; z-index: 100; display: grid; place-items: center; padding: 24px; background: rgba(0,0,0,.74); backdrop-filter: blur(8px); }
 .modal-card { width: 100%; max-height: calc(100vh - 48px); overflow: auto; background: #101216; border: 1px solid #343942; border-radius: 20px; box-shadow: 0 35px 100px rgba(0,0,0,.5); }
@@ -374,3 +375,27 @@ input:disabled { opacity: .6; cursor: not-allowed; }
 .image-specs strong { color: #fff; font-size: 13px; }
 .image-specs small { color: var(--muted); line-height: 1.45; }
 @media (max-width: 720px) { .area-calculator { grid-template-columns: 1fr; } .consumption-mode { grid-template-columns: 1fr; } }
+
+/* v0.5 — perdas, reimpressões e custo real do Job */
+.loss-form .alert { margin: 0; }
+.loss-filter { justify-content: flex-start; flex-wrap: wrap; }
+.loss-filter label { display: flex; align-items: center; gap: 10px; color: var(--muted); font-size: 12px; }
+.loss-filter input { width: 170px; }
+.loss-form input[type="file"] { padding: 9px; }
+.loss-form .check-field { padding: 12px 14px; border: 1px solid var(--line); border-radius: 12px; background: #0c1014; }
+.loss-form .check-field span { font-weight: 750; }
+.loss-form .alert.warning { line-height: 1.55; }
+@media (max-width: 720px) {
+  .loss-filter { align-items: stretch; flex-direction: column; }
+  .loss-filter label { justify-content: space-between; }
+}
+
+.loss-stats {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+@media (max-width: 1100px) {
+  .loss-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@media (max-width: 680px) {
+  .loss-stats { grid-template-columns: 1fr; }
+}

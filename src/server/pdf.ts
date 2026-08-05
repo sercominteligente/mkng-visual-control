@@ -182,6 +182,7 @@ type OrderSnapshot = {
   items?: any[];
   materials?: any[];
   steps?: any[];
+  losses?: any[];
   events?: any[];
 };
 
@@ -201,6 +202,7 @@ export async function buildOrderPdf(options: {
   const items = Array.isArray(options.snapshot.items) ? options.snapshot.items : [];
   const materials = Array.isArray(options.snapshot.materials) ? options.snapshot.materials : [];
   const steps = Array.isArray(options.snapshot.steps) ? options.snapshot.steps : [];
+  const losses = Array.isArray(options.snapshot.losses) ? options.snapshot.losses : [];
   let page = doc.addPage(pageSize);
   let y = 772;
 
@@ -289,18 +291,33 @@ export async function buildOrderPdf(options: {
   if (!materials.length) {
     drawTextLines("Nenhum material registrado para este pedido.", margin, 90, 9, regular, gray);
   } else {
-    const headers = ["Material", "Previsto", "Reservado", "Consumido", "Devolvido"];
-    const xs = [margin, 285, 360, 435, 510];
+    const headers = ["Material", "Previsto", "Reservado", "Consumido", "Perda", "Reimp.", "Devolvido"];
+    const xs = [margin, 250, 315, 380, 440, 485, 530];
     headers.forEach((header, i) => page.drawText(header, { x: xs[i], y, size: 7, font: bold, color: gray }));
     y -= 15;
     for (const item of materials) {
       if (y < 78) nextPage();
       page.drawText(String(item.material_name || item.name || "Material").slice(0, 38), { x: margin, y, size: 8, font: regular, color: dark });
-      page.drawText(`${item.planned_qty ?? 0} ${item.unit ?? ""}`, { x: 285, y, size: 8, font: regular, color: dark });
-      page.drawText(`${item.reserved_qty ?? 0}`, { x: 360, y, size: 8, font: regular, color: dark });
-      page.drawText(`${item.consumed_qty ?? 0}`, { x: 435, y, size: 8, font: regular, color: dark });
-      page.drawText(`${item.returned_qty ?? 0}`, { x: 510, y, size: 8, font: regular, color: dark });
+      page.drawText(`${item.planned_qty ?? 0} ${item.unit ?? ""}`, { x: 250, y, size: 8, font: regular, color: dark });
+      page.drawText(`${item.reserved_qty ?? 0}`, { x: 315, y, size: 8, font: regular, color: dark });
+      page.drawText(`${item.consumed_qty ?? 0}`, { x: 380, y, size: 8, font: regular, color: dark });
+      page.drawText(`${item.loss_qty ?? 0}`, { x: 440, y, size: 8, font: regular, color: rgb(0.72, 0.12, 0.14) });
+      page.drawText(`${item.reprint_qty ?? 0}`, { x: 485, y, size: 8, font: regular, color: dark });
+      page.drawText(`${item.returned_qty ?? 0}`, { x: 530, y, size: 8, font: regular, color: dark });
       y -= 15;
+    }
+  }
+
+  if (losses.length) {
+    sectionTitle("Perdas e reimpressões");
+    for (const loss of losses) {
+      if (y < 92) nextPage();
+      const status = loss.status === "reversed" ? "ESTORNADA" : "CONFIRMADA";
+      page.drawText(`${loss.material_name || "Material"} — ${loss.quantity ?? 0} ${loss.unit ?? ""}`, { x: margin, y, size: 8.5, font: bold, color: loss.status === "reversed" ? gray : rgb(0.72, 0.12, 0.14) });
+      page.drawText(status, { x: 475, y, size: 7.5, font: bold, color: loss.status === "reversed" ? gray : rgb(0.72, 0.12, 0.14) });
+      y -= 14;
+      drawTextLines(`${loss.reason || "Sem motivo informado"}${loss.machine ? ` | Máquina: ${loss.machine}` : ""}${loss.created_by_name ? ` | Operador: ${loss.created_by_name}` : ""}${loss.total_cost ? ` | Custo estimado: ${brl(loss.total_cost)}` : ""}${Number(loss.requires_reprint) === 1 ? ` | Reimpressão: ${loss.reprint_qty ?? 0} ${loss.unit ?? ""}` : ""}`, margin, 88, 8, regular, gray, 11);
+      y -= 4;
     }
   }
 

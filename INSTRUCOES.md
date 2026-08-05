@@ -1,38 +1,45 @@
-# MKNG Visual Control — atualização 0.4.2
+# Atualização MKNG Visual Control v0.5.0
 
-## Conteúdo
+## Conteúdo da versão
 
-- baixa automática ao concluir Pedido/OS com materiais pendentes;
-- baixa manual por unidade e m²;
-- quatro relatórios PDF independentes;
-- entrada/sinal e forma de pagamento em Contas a receber;
-- pagamentos adicionais e recibo PDF;
-- migração D1 `0005_finance_receipts.sql`.
+Esta atualização cria o módulo **Perdas / Reimpressões** para registrar desperdícios de materiais e refletir imediatamente seus efeitos no estoque e no custo operacional do Job.
 
-## Implantação
+## Instalação pelo GitHub
 
-1. Extraia o ZIP incremental.
-2. Envie o conteúdo extraído para a raiz do repositório `mkng-visual-control`.
-3. Permita a substituição dos arquivos existentes.
-4. Faça o commit na branch `main` com a mensagem:
+1. Extraia o arquivo `mkng-visual-control-update-v0.5.0.zip` no computador.
+2. No repositório `sercominteligente/mkng-visual-control`, clique em **Add file → Upload files**.
+3. Arraste o conteúdo extraído para a raiz do repositório.
+4. Permita a substituição dos arquivos existentes.
+5. Faça o commit diretamente na branch `main` com a mensagem:
 
 ```text
-Corrige baixa, relatórios e recebimentos financeiros
+Implementa perdas, reimpressões e custo real do Job
 ```
 
-5. Acompanhe o build da Cloudflare.
-6. Confirme no log:
+O pacote incremental não contém `wrangler.jsonc`, segredos de ambiente nem configurações exclusivas da Cloudflare.
+
+## Migração D1
+
+O comando de implantação já configurado deve aplicar automaticamente:
 
 ```text
-0005_finance_receipts.sql ✅
+0006_material_losses.sql
 ```
 
-## Teste rápido após o deploy
+No log da Cloudflare, confirme:
 
-1. Crie um Pedido/OS com material em unidade e conclua com baixa automática.
-2. Crie outro com material em m² e confirme a baixa por medidas.
-3. Gere os quatro relatórios e confira os títulos distintos.
-4. Cadastre uma conta a receber com entrada/sinal e forma de pagamento.
-5. Registre um segundo pagamento e gere o recibo em PDF.
+```text
+0006_material_losses.sql | ✅
+```
 
-O pacote incremental não contém `wrangler.jsonc`, `src/server/auth.ts`, arquivos `.env` ou segredos.
+## Roteiro mínimo de validação
+
+1. Abra **Perdas / Reimpressões**.
+2. Registre uma perda geral de pequena quantidade e confirme a redução do estoque.
+3. Estorne a perda como Super Administrador e confirme a devolução ao estoque.
+4. Abra um Pedido/OS não concluído e registre uma perda vinculada ao Job.
+5. Marque a necessidade de reimpressão e confira a nova reserva do material.
+6. Gere o relatório PDF **Perdas e reimpressões**.
+7. Confira no PDF do Pedido/OS a seção de perdas.
+
+Não utilize materiais reais durante a primeira rodada. Faça os testes com um cadastro temporário e quantidades pequenas.
