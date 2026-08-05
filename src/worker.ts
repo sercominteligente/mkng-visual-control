@@ -80,6 +80,19 @@ function stockUnitLabel(unit: string, value: number): string {
   return Math.abs(value) === 1 ? pair[0] : pair[1];
 }
 
+function orderStatusLabel(value: string): string {
+  const labels: Record<string, string> = {
+    draft: "Rascunho", approved: "Aprovado", production: "Produção", finishing: "Acabamento",
+    installation: "Instalação", completed: "Concluído", cancelled: "Cancelado",
+  };
+  return labels[value] ?? value ?? "—";
+}
+
+function priorityLabel(value: string): string {
+  const labels: Record<string, string> = { low: "Baixa", normal: "Normal", high: "Alta", urgent: "Urgente" };
+  return labels[value] ?? value ?? "—";
+}
+
 function resolveConsumptionQuantity(data: any, material: any): { quantity: number; detail: string } {
   if (material.unit === "m2" && data.mode === "dimensions") {
     const widthMm = quantity(data.width_mm);
@@ -167,6 +180,52 @@ async function loadOrderSnapshot(c: any, orderId: string): Promise<any | null> {
     ).bind(orderId).all<any>(),
   ]);
   return { order, items: items.results, materials: materials.results, steps: steps.results };
+}
+
+async function pendingOrderMaterials(env: AppEnv["Bindings"], orderId: string): Promise<any[]> {
+  const result = await env.DB.prepare(
+    `SELECT om.material_id,m.name AS material_name,m.unit,
+            om.planned_qty,om.reserved_qty,om.consumed_qty,om.returned_qty,
+            MAX(om.reserved_qty - om.consumed_qty, 0) AS pending_qty
+       FROM order_materials om
+       JOIN materials m ON m.id=om.material_id
+      WHERE om.order_id=? AND MAX(om.reserved_qty - om.consumed_qty, 0) > 0
+      ORDER BY m.name`,
+  ).bind(orderId).all<any>();
+  return result.results;
+}
+
+function pendingMaterialsMessage(rows: any[]): string {
+  const details = rows.slice(0, 4).map((row) => `${row.material_name}: ${quantity(row.pending_qty)} ${stockUnitLabel(row.unit, quantity(row.pending_qty))}`);
+  const suffix = rows.length > 4 ? ` e mais ${rows.length - 4}` : "";
+  return `Confirme a baixa ou ajuste a reserva antes de concluir o pedido. Pendências: ${details.join("; ")}${suffix}.`;
+}
+
+function financeStatus(amountValue: unknown, receivedValue: unknown, dueDate?: string | null, requestedStatus?: string | null): string {
+  if (requestedStatus === "cancelled") return "cancelled";
+  const amount = money(amountValue);
+  const received = Math.min(Math.max(money(receivedValue), 0), amount);
+  if (amount > 0 && received >= amount) return "paid";
+  if (received > 0) return "partial";
+  if (dueDate && dueDate < new Date().toISOString().slice(0, 10)) return "overdue";
+  return "pending";
+}
+
+function paymentMethodLabel(value: unknown): string {
+  const labels: Record<string, string> = { pix: "PIX", cash: "Espécie", card: "Cartão", transfer: "Transferência" };
+  return labels[String(value ?? "")] ?? "Não informado";
+}
+
+async function pendingMaterialsForAutoConsumption(env: AppEnv["Bindings"], orderId: string): Promise<any[]> {
+  const result = await env.DB.prepare(
+    `SELECT om.material_id,m.name AS material_name,m.unit,m.current_stock,m.average_cost,
+            MAX(om.reserved_qty-om.consumed_qty,0) AS pending_qty
+       FROM order_materials om
+       JOIN materials m ON m.id=om.material_id
+      WHERE om.order_id=? AND MAX(om.reserved_qty-om.consumed_qty,0)>0
+      ORDER BY m.name`,
+  ).bind(orderId).all<any>();
+  return result.results;
 }
 
 async function recordOrderEvent(c: any, orderId: string, eventType: string, label: string, status?: string | null, notes?: string | null): Promise<string> {
@@ -864,6 +923,10 @@ app.put("/api/orders/:id", async (c) => {
   if (data.status === "cancelled") return c.json({ error: "Use a ação Cancelar pedido e informe o motivo" }, 400);
   const previous = await c.env.DB.prepare("SELECT status FROM orders WHERE id=?").bind(orderId).first<any>();
   if (!previous) return c.json({ error: "Pedido não encontrado" }, 404);
+  if (data.status === "completed" && previous.status !== "completed") {
+    const pending = await pendingOrderMaterials(c.env, orderId);
+    if (pending.length) return c.json({ error: pendingMaterialsMessage(pending), pendingMaterials: pending }, 409);
+  }
   await c.env.DB.prepare(
     `UPDATE orders SET customer_id=?,title=?,description=?,priority=?,status=?,due_date=?,total_price=?,notes=?,updated_at=? WHERE id=?`,
   ).bind(data.customer_id ?? null, data.title, data.description ?? null, data.priority ?? "normal", data.status ?? "draft", data.due_date ?? null, money(data.total_price), data.notes ?? null, now(), orderId).run();
@@ -940,16 +1003,51 @@ app.post("/api/orders/:id/stage", async (c) => {
     briefing: "approved", design: "approved", printing: "production", finishing: "finishing", installation: "installation", completed: "completed",
   };
   const orderStatus = statusMap[stage] ?? "production";
-  await c.env.DB.batch([
+  const statements: any[] = [];
+  const autoConsumed: Array<{ material: string; quantity: number; unit: string; newStock: number }> = [];
+
+  if (stage === "completed") {
+    const pending = await pendingMaterialsForAutoConsumption(c.env, orderId);
+    if (pending.length && !data.auto_consume_pending) {
+      return c.json({ error: pendingMaterialsMessage(pending), pendingMaterials: pending, canAutoConsume: true }, 409);
+    }
+    for (const row of pending) {
+      const qty = quantity(row.pending_qty);
+      const currentStock = quantity(row.current_stock);
+      if (qty <= 0) continue;
+      if (["un", "chapa", "rolo", "lata", "kit", "pct"].includes(String(row.unit)) && !Number.isInteger(qty)) {
+        return c.json({ error: `${row.material_name} exige quantidade inteira para concluir o pedido` }, 409);
+      }
+      if (currentStock < qty) {
+        return c.json({ error: `Estoque insuficiente de ${row.material_name}. Disponível: ${currentStock} ${stockUnitLabel(row.unit, currentStock)}; necessário: ${qty} ${stockUnitLabel(row.unit, qty)}.` }, 409);
+      }
+      const newStock = quantity(currentStock - qty);
+      statements.push(
+        c.env.DB.prepare("UPDATE materials SET current_stock=?,updated_at=? WHERE id=?").bind(newStock, now(), row.material_id),
+        c.env.DB.prepare("UPDATE order_materials SET consumed_qty=consumed_qty+? WHERE order_id=? AND material_id=?").bind(qty, orderId, row.material_id),
+        c.env.DB.prepare(
+          "INSERT INTO stock_movements (id,material_id,type,quantity,unit_cost,total_cost,order_id,notes,user_id) VALUES (?,?,?,?,?,?,?,?,?)",
+        ).bind(id(), row.material_id, "consumption", -qty, money(row.average_cost), -money(qty * row.average_cost), orderId, `Baixa automática na conclusão do pedido: ${qty} ${stockUnitLabel(row.unit, qty)}`, c.get("user").id),
+      );
+      autoConsumed.push({ material: row.material_name, quantity: qty, unit: row.unit, newStock });
+    }
+  }
+
+  statements.push(
     c.env.DB.prepare("UPDATE production_steps SET status='completed',completed_at=? WHERE order_id=? AND status='in_progress'").bind(now(), orderId),
     c.env.DB.prepare("INSERT INTO production_steps (id,order_id,stage,status,assignee_id,started_at,notes) VALUES (?,?,?,?,?,?,?)")
       .bind(id(), orderId, stage, stage === "completed" ? "completed" : "in_progress", data.assignee_id ?? null, now(), data.notes ?? null),
     c.env.DB.prepare("UPDATE orders SET status=?,started_at=COALESCE(started_at,?),completed_at=CASE WHEN ?='completed' THEN ? ELSE completed_at END,updated_at=? WHERE id=?")
       .bind(orderStatus, now(), stage, now(), now(), orderId),
-  ]);
-  await audit(c, "change_stage", "order", orderId, data);
-  await recordOrderEvent(c, orderId, "stage_changed", `Etapa de produção: ${stage}`, orderStatus, data.notes ?? null);
-  return c.json({ ok: true, status: orderStatus });
+  );
+
+  await c.env.DB.batch(statements);
+  await audit(c, "change_stage", "order", orderId, { ...data, autoConsumed });
+  const notes = autoConsumed.length
+    ? `Baixa automática realizada: ${autoConsumed.map((item) => `${item.material}: ${item.quantity} ${stockUnitLabel(item.unit, item.quantity)}`).join("; ")}. ${data.notes ?? ""}`.trim()
+    : data.notes ?? null;
+  await recordOrderEvent(c, orderId, "stage_changed", `Etapa de produção: ${stage}`, orderStatus, notes);
+  return c.json({ ok: true, status: orderStatus, autoConsumed });
 });
 app.post("/api/orders/:id/cancel", async (c) => {
   if (!["super_admin", "admin", "manager"].includes(c.get("user").role)) return c.json({ error: "Somente Super Administrador, Administrador ou Gestor podem cancelar pedidos" }, 403);
@@ -1004,37 +1102,138 @@ app.delete("/api/orders/:id", requireSuperAdmin(), async (c) => {
 app.use("/api/finance", requirePermission("finance"));
 app.use("/api/finance/*", requirePermission("finance"));
 app.get("/api/finance", async (c) => {
-  const kind = c.req.query("kind") === "payable" ? "payables" : "receivables";
-  const relation = kind === "payables" ? "suppliers" : "customers";
-  const relationId = kind === "payables" ? "supplier_id" : "customer_id";
+  const payable = c.req.query("kind") === "payable";
+  if (payable) {
+    const result = await c.env.DB.prepare(
+      `SELECT f.*,r.name AS party_name,
+              CASE WHEN f.status='paid' THEN 0 ELSE f.amount END AS balance_amount
+         FROM payables f LEFT JOIN suppliers r ON r.id=f.supplier_id
+        ORDER BY CASE f.status WHEN 'overdue' THEN 1 WHEN 'pending' THEN 2 ELSE 3 END,f.due_date`,
+    ).all<any>();
+    return c.json({ items: result.results, kind: "payables" });
+  }
   const result = await c.env.DB.prepare(
-    `SELECT f.*, r.name AS party_name FROM ${kind} f LEFT JOIN ${relation} r ON r.id=f.${relationId} ORDER BY CASE f.status WHEN 'overdue' THEN 1 WHEN 'pending' THEN 2 ELSE 3 END, f.due_date`,
+    `SELECT f.*,r.name AS party_name,
+            MAX(f.amount-COALESCE(f.received_amount,0),0) AS balance_amount
+       FROM receivables f LEFT JOIN customers r ON r.id=f.customer_id
+      ORDER BY CASE f.status WHEN 'overdue' THEN 1 WHEN 'partial' THEN 2 WHEN 'pending' THEN 3 ELSE 4 END,
+               COALESCE(f.balance_due_date,f.due_date)`,
   ).all<any>();
-  return c.json({ items: result.results, kind });
+  return c.json({ items: result.results, kind: "receivables" });
 });
+
 app.post("/api/finance", async (c) => {
   const data = await body<any>(c);
   const kind = data.kind === "payable" ? "payables" : "receivables";
   const entityId = id();
+  const amount = money(data.amount);
+  if (!String(data.description ?? "").trim()) return c.json({ error: "Informe a descrição do lançamento" }, 400);
+  if (amount <= 0) return c.json({ error: "O valor do lançamento deve ser maior que zero" }, 400);
+
   if (kind === "payables") {
     await c.env.DB.prepare("INSERT INTO payables (id,purchase_id,supplier_id,description,amount,due_date,status,notes) VALUES (?,?,?,?,?,?,?,?)")
-      .bind(entityId, data.purchase_id ?? null, data.supplier_id ?? null, data.description, money(data.amount), data.due_date ?? null, data.status ?? "pending", data.notes ?? null).run();
+      .bind(entityId, data.purchase_id ?? null, data.supplier_id ?? null, String(data.description).trim(), amount, data.due_date ?? null, data.status ?? "pending", data.notes ?? null).run();
   } else {
-    await c.env.DB.prepare("INSERT INTO receivables (id,order_id,customer_id,description,amount,due_date,status,notes) VALUES (?,?,?,?,?,?,?,?)")
-      .bind(entityId, data.order_id ?? null, data.customer_id ?? null, data.description, money(data.amount), data.due_date ?? null, data.status ?? "pending", data.notes ?? null).run();
+    const received = money(data.received_amount);
+    if (received < 0 || received > amount) return c.json({ error: "A entrada/sinal não pode ser negativa nem maior que o valor total" }, 400);
+    const method = String(data.payment_method ?? "");
+    if (received > 0 && !["pix", "cash", "card", "transfer"].includes(method)) return c.json({ error: "Selecione a forma de pagamento da entrada/sinal" }, 400);
+    const balanceDueDate = data.balance_due_date ?? data.due_date ?? null;
+    const status = financeStatus(amount, received, balanceDueDate, data.status);
+    const paymentDate = received > 0 ? (data.payment_date || new Date().toISOString().slice(0, 10)) : null;
+    const paidAt = status === "paid" ? (data.paid_at ?? now()) : null;
+    const statements = [
+      c.env.DB.prepare(
+        `INSERT INTO receivables
+         (id,order_id,customer_id,description,amount,due_date,paid_at,status,notes,received_amount,payment_method,payment_date,balance_due_date,payment_reference)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+      ).bind(
+        entityId, data.order_id ?? null, data.customer_id ?? null, String(data.description).trim(), amount, balanceDueDate, paidAt, status, data.notes ?? null,
+        received, received > 0 ? method : null, paymentDate, balanceDueDate, data.payment_reference ?? null,
+      ),
+    ];
+    if (received > 0) {
+      statements.push(
+        c.env.DB.prepare(
+          "INSERT INTO receivable_payments (id,receivable_id,amount,payment_method,payment_date,reference,notes,created_by) VALUES (?,?,?,?,?,?,?,?)",
+        ).bind(id(), entityId, received, method, paymentDate, data.payment_reference ?? null, data.notes ?? null, c.get("user").id),
+      );
+    }
+    await c.env.DB.batch(statements);
   }
   await audit(c, "create", kind === "payables" ? "payable" : "receivable", entityId, data);
   return c.json({ id: entityId }, 201);
 });
+
 app.put("/api/finance/:kind/:id", async (c) => {
   const data = await body<any>(c);
-  const table = c.req.param("kind") === "payable" ? "payables" : "receivables";
-  const paidAt = data.status === "paid" ? data.paid_at ?? now() : null;
-  await c.env.DB.prepare(`UPDATE ${table} SET description=?,amount=?,due_date=?,paid_at=?,status=?,notes=?,updated_at=? WHERE id=?`)
-    .bind(data.description, money(data.amount), data.due_date ?? null, paidAt, data.status ?? "pending", data.notes ?? null, now(), c.req.param("id")).run();
-  await audit(c, "update", table === "payables" ? "payable" : "receivable", c.req.param("id"), data);
-  return c.json({ ok: true });
+  const entityId = c.req.param("id");
+  if (c.req.param("kind") === "payable") {
+    const paidAt = data.status === "paid" ? data.paid_at ?? now() : null;
+    await c.env.DB.prepare("UPDATE payables SET description=?,amount=?,due_date=?,paid_at=?,status=?,notes=?,updated_at=? WHERE id=?")
+      .bind(data.description, money(data.amount), data.due_date ?? null, paidAt, data.status ?? "pending", data.notes ?? null, now(), entityId).run();
+    await audit(c, "update", "payable", entityId, data);
+    return c.json({ ok: true });
+  }
+
+  const existing = await c.env.DB.prepare("SELECT * FROM receivables WHERE id=?").bind(entityId).first<any>();
+  if (!existing) return c.json({ error: "Lançamento não encontrado" }, 404);
+  const amount = money(data.amount ?? existing.amount);
+  let received = money(data.received_amount ?? existing.received_amount);
+  if (data.status === "paid" && received < amount) received = amount;
+  if (received < 0 || received > amount) return c.json({ error: "O valor recebido não pode ser negativo nem maior que o valor total" }, 400);
+  const method = String(data.payment_method ?? existing.payment_method ?? "");
+  if (received > 0 && !["pix", "cash", "card", "transfer"].includes(method)) return c.json({ error: "Selecione a forma de pagamento" }, 400);
+  const dueDate = data.balance_due_date ?? data.due_date ?? existing.balance_due_date ?? existing.due_date ?? null;
+  const status = financeStatus(amount, received, dueDate, data.status);
+  const paymentDate = received > 0 ? (data.payment_date ?? existing.payment_date ?? new Date().toISOString().slice(0, 10)) : null;
+  const paidAt = status === "paid" ? (data.paid_at ?? existing.paid_at ?? now()) : null;
+  await c.env.DB.prepare(
+    `UPDATE receivables SET description=?,amount=?,due_date=?,paid_at=?,status=?,notes=?,received_amount=?,payment_method=?,payment_date=?,balance_due_date=?,payment_reference=?,updated_at=? WHERE id=?`,
+  ).bind(
+    data.description ?? existing.description, amount, dueDate, paidAt, status, data.notes ?? existing.notes ?? null, received, received > 0 ? method : null, paymentDate, dueDate,
+    data.payment_reference ?? existing.payment_reference ?? null, now(), entityId,
+  ).run();
+  await audit(c, "update", "receivable", entityId, { ...data, amount, received_amount: received, status });
+  return c.json({ ok: true, status, balance_amount: money(amount - received) });
 });
+
+app.post("/api/finance/receivable/:id/payments", async (c) => {
+  const receivableId = c.req.param("id");
+  const data = await body<any>(c);
+  const row = await c.env.DB.prepare("SELECT * FROM receivables WHERE id=?").bind(receivableId).first<any>();
+  if (!row) return c.json({ error: "Conta a receber não encontrada" }, 404);
+  if (row.status === "cancelled") return c.json({ error: "Não é possível registrar pagamento em lançamento cancelado" }, 409);
+  const paymentAmount = money(data.amount);
+  const currentReceived = money(row.received_amount);
+  const balance = money(row.amount - currentReceived);
+  if (paymentAmount <= 0) return c.json({ error: "Informe um valor de pagamento maior que zero" }, 400);
+  if (paymentAmount > balance) return c.json({ error: `O pagamento excede o saldo restante de ${balance.toLocaleString("pt-BR", { style: "currency", currency: "BRL" })}` }, 409);
+  const method = String(data.payment_method ?? "");
+  if (!["pix", "cash", "card", "transfer"].includes(method)) return c.json({ error: "Selecione a forma de pagamento" }, 400);
+  const paymentDate = data.payment_date || new Date().toISOString().slice(0, 10);
+  const newReceived = money(currentReceived + paymentAmount);
+  const status = financeStatus(row.amount, newReceived, row.balance_due_date ?? row.due_date, row.status);
+  const paymentId = id();
+  await c.env.DB.batch([
+    c.env.DB.prepare(
+      "INSERT INTO receivable_payments (id,receivable_id,amount,payment_method,payment_date,reference,notes,created_by) VALUES (?,?,?,?,?,?,?,?)",
+    ).bind(paymentId, receivableId, paymentAmount, method, paymentDate, data.reference ?? null, data.notes ?? null, c.get("user").id),
+    c.env.DB.prepare(
+      "UPDATE receivables SET received_amount=?,payment_method=?,payment_date=?,payment_reference=?,status=?,paid_at=?,updated_at=? WHERE id=?",
+    ).bind(newReceived, method, paymentDate, data.reference ?? row.payment_reference ?? null, status, status === "paid" ? now() : null, now(), receivableId),
+  ]);
+  await audit(c, "register_payment", "receivable", receivableId, { paymentId, amount: paymentAmount, method, paymentDate, newReceived, status });
+  return c.json({ ok: true, paymentId, received_amount: newReceived, balance_amount: money(row.amount - newReceived), status });
+});
+
+app.get("/api/finance/receivable/:id/payments", async (c) => {
+  const result = await c.env.DB.prepare(
+    `SELECT p.*,u.name AS user_name FROM receivable_payments p LEFT JOIN users u ON u.id=p.created_by WHERE p.receivable_id=? ORDER BY p.payment_date DESC,p.created_at DESC`,
+  ).bind(c.req.param("id")).all<any>();
+  return c.json({ items: result.results });
+});
+
 app.delete("/api/finance/:kind/:id", requireSuperAdmin(), async (c) => {
   const table = c.req.param("kind") === "payable" ? "payables" : "receivables";
   const entityType = table === "payables" ? "payable" : "receivable";
@@ -1044,6 +1243,45 @@ app.delete("/api/finance/:kind/:id", requireSuperAdmin(), async (c) => {
   await c.env.DB.prepare(`DELETE FROM ${table} WHERE id=?`).bind(entityId).run();
   await audit(c, "delete_permanent", entityType, entityId, row);
   return c.json({ ok: true });
+});
+
+app.get("/api/finance/receivable/:id/receipt.pdf", async (c) => {
+  const row = await c.env.DB.prepare(
+    `SELECT r.*,c.name AS customer_name,o.code AS order_code
+       FROM receivables r LEFT JOIN customers c ON c.id=r.customer_id LEFT JOIN orders o ON o.id=r.order_id
+      WHERE r.id=?`,
+  ).bind(c.req.param("id")).first<any>();
+  if (!row) return c.json({ error: "Conta a receber não encontrada" }, 404);
+  const received = money(row.received_amount);
+  if (received <= 0) return c.json({ error: "Este lançamento ainda não possui pagamento registrado" }, 409);
+  const balance = money(row.amount - received);
+  const brand = await pdfBrand(c.env);
+  const pdf = await buildReportPdf({
+    title: "Recibo de Pagamento",
+    subtitle: row.order_code ? `Referente ao Pedido/OS ${row.order_code}` : "Comprovante de entrada ou recebimento",
+    rows: [row],
+    summary: [
+      `Cliente: ${row.customer_name || "—"}`,
+      `Valor total: ${money(row.amount).toLocaleString("pt-BR", { style: "currency", currency: "BRL" })}`,
+      `Valor recebido: ${received.toLocaleString("pt-BR", { style: "currency", currency: "BRL" })}`,
+      `Saldo restante: ${balance.toLocaleString("pt-BR", { style: "currency", currency: "BRL" })}`,
+    ],
+    columns: [
+      { label: "Descrição", width: 220, value: (r: any) => r.description },
+      { label: "Pagamento", width: 100, value: (r: any) => paymentMethodLabel(r.payment_method) },
+      { label: "Data", width: 90, value: (r: any) => r.payment_date || "—" },
+      { label: "Recebido", width: 100, value: (r: any) => money(r.received_amount).toLocaleString("pt-BR", { style: "currency", currency: "BRL" }) },
+      { label: "Referência", width: 140, value: (r: any) => r.payment_reference || r.order_code || "—" },
+    ],
+    brand,
+  });
+  return new Response(pdf as BodyInit, {
+    headers: {
+      "Content-Type": "application/pdf",
+      "Content-Disposition": `inline; filename="recibo-${row.order_code || row.id}.pdf"`,
+      "Cache-Control": "private, no-store",
+    },
+  });
 });
 
 app.use("/api/users", requirePermission("users"));
@@ -1257,8 +1495,10 @@ app.delete("/api/attachments/:id", requireSuperAdmin(), async (c) => {
 
 app.use("/api/reports", requirePermission("reports"));
 app.use("/api/reports/*", requirePermission("reports"));
-app.get("/api/reports/:type.pdf", async (c) => {
+app.get("/api/reports/:type/pdf", async (c) => {
   const type = c.req.param("type");
+  const allowedTypes = new Set(["orders", "stock", "movements", "finance"]);
+  if (!allowedTypes.has(type)) return c.json({ error: "Tipo de relatório inválido" }, 404);
   const from = c.req.query("from") || "2000-01-01";
   const to = c.req.query("to") || "2999-12-31";
   const brand = await pdfBrand(c.env);
@@ -1287,27 +1527,37 @@ app.get("/api/reports/:type.pdf", async (c) => {
       brand,
     });
   } else if (type === "finance") {
-    const receivables = await c.env.DB.prepare("SELECT r.*,c.name AS party FROM receivables r LEFT JOIN customers c ON c.id=r.customer_id WHERE COALESCE(r.due_date,'') BETWEEN ? AND ? ORDER BY r.due_date").bind(from, to).all<any>();
+    const receivables = await c.env.DB.prepare(
+      "SELECT r.*,c.name AS party,MAX(r.amount-COALESCE(r.received_amount,0),0) AS balance_amount FROM receivables r LEFT JOIN customers c ON c.id=r.customer_id WHERE COALESCE(r.balance_due_date,r.due_date,'') BETWEEN ? AND ? ORDER BY COALESCE(r.balance_due_date,r.due_date)",
+    ).bind(from, to).all<any>();
     const payables = await c.env.DB.prepare("SELECT p.*,s.name AS party FROM payables p LEFT JOIN suppliers s ON s.id=p.supplier_id WHERE COALESCE(p.due_date,'') BETWEEN ? AND ? ORDER BY p.due_date").bind(from, to).all<any>();
     const rows = [
-      ...receivables.results.map((r: any) => ({ ...r, kind: "Receber" })),
-      ...payables.results.map((r: any) => ({ ...r, kind: "Pagar" })),
+      ...receivables.results.map((r: any) => ({ ...r, kind: "Receber", received: money(r.received_amount), balance: money(r.balance_amount), method: paymentMethodLabel(r.payment_method) })),
+      ...payables.results.map((r: any) => ({ ...r, kind: "Pagar", received: r.status === "paid" ? money(r.amount) : 0, balance: r.status === "paid" ? 0 : money(r.amount), method: "—" })),
     ];
+    const receivableTotal = receivables.results.reduce((sum: number, row: any) => sum + money(row.amount), 0);
+    const receivedTotal = receivables.results.reduce((sum: number, row: any) => sum + money(row.received_amount), 0);
+    const payableTotal = payables.results.reduce((sum: number, row: any) => sum + money(row.amount), 0);
     pdf = await buildReportPdf({
       title: "Relatório Financeiro",
       subtitle: `Período de ${from} a ${to}`,
       rows,
       summary: [
-        `Contas a receber: ${receivables.results.reduce((s: number, r: any) => s + money(r.amount), 0).toLocaleString("pt-BR", { style: "currency", currency: "BRL" })}`,
-        `Contas a pagar: ${payables.results.reduce((s: number, r: any) => s + money(r.amount), 0).toLocaleString("pt-BR", { style: "currency", currency: "BRL" })}`,
+        `Contas a receber: ${receivableTotal.toLocaleString("pt-BR", { style: "currency", currency: "BRL" })}`,
+        `Recebido no cadastro: ${receivedTotal.toLocaleString("pt-BR", { style: "currency", currency: "BRL" })}`,
+        `Saldo a receber: ${money(receivableTotal - receivedTotal).toLocaleString("pt-BR", { style: "currency", currency: "BRL" })}`,
+        `Contas a pagar: ${payableTotal.toLocaleString("pt-BR", { style: "currency", currency: "BRL" })}`,
       ],
       columns: [
-        { label: "Tipo", width: 65, value: (r) => r.kind },
-        { label: "Descrição", width: 210, value: (r) => r.description },
-        { label: "Cliente / Fornecedor", width: 160, value: (r) => r.party || "—" },
-        { label: "Vencimento", width: 90, value: (r) => r.due_date || "—" },
-        { label: "Valor", width: 90, value: (r) => money(r.amount).toLocaleString("pt-BR", { style: "currency", currency: "BRL" }) },
-        { label: "Status", width: 80, value: (r) => r.status },
+        { label: "Tipo", width: 60, value: (r) => r.kind },
+        { label: "Descrição", width: 175, value: (r) => r.description },
+        { label: "Cliente / Fornecedor", width: 130, value: (r) => r.party || "—" },
+        { label: "Vencimento", width: 80, value: (r) => r.balance_due_date || r.due_date || "—" },
+        { label: "Total", width: 75, value: (r) => money(r.amount).toLocaleString("pt-BR", { style: "currency", currency: "BRL" }) },
+        { label: "Recebido", width: 75, value: (r) => money(r.received).toLocaleString("pt-BR", { style: "currency", currency: "BRL" }) },
+        { label: "Saldo", width: 75, value: (r) => money(r.balance).toLocaleString("pt-BR", { style: "currency", currency: "BRL" }) },
+        { label: "Forma", width: 80, value: (r) => r.method },
+        { label: "Status", width: 65, value: (r) => r.status },
       ],
       brand,
     });
@@ -1334,7 +1584,7 @@ app.get("/api/reports/:type.pdf", async (c) => {
       ],
       brand,
     });
-  } else {
+  } else if (type === "orders") {
     const result = await c.env.DB.prepare(
       `SELECT o.code,o.title,o.status,o.priority,o.due_date,o.total_price,c.name AS customer_name
        FROM orders o LEFT JOIN customers c ON c.id=o.customer_id
@@ -1349,8 +1599,8 @@ app.get("/api/reports/:type.pdf", async (c) => {
         { label: "Código", width: 90, value: (r) => r.code },
         { label: "Pedido", width: 190, value: (r) => r.title },
         { label: "Cliente", width: 145, value: (r) => r.customer_name || "—" },
-        { label: "Status", width: 90, value: (r) => r.status },
-        { label: "Prioridade", width: 80, value: (r) => r.priority },
+        { label: "Status", width: 90, value: (r) => orderStatusLabel(r.status) },
+        { label: "Prioridade", width: 80, value: (r) => priorityLabel(r.priority) },
         { label: "Entrega", width: 90, value: (r) => r.due_date || "—" },
         { label: "Valor", width: 90, value: (r) => money(r.total_price).toLocaleString("pt-BR", { style: "currency", currency: "BRL" }) },
       ],
@@ -1360,7 +1610,7 @@ app.get("/api/reports/:type.pdf", async (c) => {
   return new Response(pdf as BodyInit, {
     headers: {
       "Content-Type": "application/pdf",
-      "Content-Disposition": `inline; filename="mkng-${type}-${from}-${to}.pdf"`,
+      "Content-Disposition": `inline; filename="relatorio-${type}-${from}-${to}.pdf"`,
       "Cache-Control": "private, no-store",
     },
   });

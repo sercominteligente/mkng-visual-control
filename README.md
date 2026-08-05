@@ -120,3 +120,18 @@ Consulte `docs/ALTERACOES_V0.3_PEDIDOS_PERSONALIZACAO.md`.
 - reversão segura das movimentações ao excluir compras, pedidos ou baixas;
 - dimensões recomendadas das imagens exibidas na personalização visual;
 - nenhuma migração D1 adicional necessária.
+
+## Versão 0.4.1
+
+- relatórios PDF com rotas separadas para Pedidos, Estoque, Movimentações e Financeiro;
+- bloqueio de conclusão de Job com material pendente de baixa;
+- saldo atualizado exibido após confirmação de consumo.
+
+## Versão 0.4.2
+
+- conclusão do Pedido/OS com baixa automática dos materiais reservados ainda pendentes, mediante confirmação;
+- baixa por unidade e por m² preservada na confirmação manual;
+- relatório financeiro com total, recebido, saldo e forma de pagamento;
+- contas a receber com entrada/sinal, data, PIX, espécie, cartão ou transferência;
+- registro de pagamentos posteriores e recibo em PDF;
+- migração D1 `0005_finance_receipts.sql`.
