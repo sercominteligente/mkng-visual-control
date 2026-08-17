@@ -13,6 +13,7 @@ type CatalogMeta = {
   updated_at: string;
   created_by_name?: string;
   preview?: string;
+  content?: string;
 };
 
 type CatalogResponse = {
@@ -31,6 +32,7 @@ export function PricingReferenceCatalogPage() {
   const [data, setData] = useState<CatalogResponse | null>(null);
   const [filename, setFilename] = useState("");
   const [content, setContent] = useState("");
+  const [editingId, setEditingId] = useState("");
   const [busy, setBusy] = useState("");
   const [error, setError] = useState("");
   const [success, setSuccess] = useState("");
@@ -64,13 +66,33 @@ export function PricingReferenceCatalogPage() {
     setContent(text);
   };
 
+  const clearEditor = () => {
+    setEditingId("");
+    setFilename("");
+    setContent("");
+  };
+
+  const editActive = () => {
+    if (!data?.active) return;
+    setError(""); setSuccess("");
+    setEditingId(data.active.id);
+    setFilename(data.active.filename);
+    setContent(data.active.content || data.active.preview || "");
+    window.setTimeout(() => document.getElementById("pricing-reference-editor")?.scrollIntoView({ behavior: "smooth", block: "start" }), 30);
+  };
+
   const save = async () => {
-    if (!filename || content.trim().length < 20) { setError("Selecione um TXT válido antes de ativar a tabela."); return; }
+    if (!filename || content.trim().length < 20) { setError("Selecione um TXT válido antes de salvar a tabela."); return; }
     setBusy("save"); setError(""); setSuccess("");
     try {
-      await api("/pricing/reference-catalog", { method: "POST", body: JSON.stringify({ filename, content }) });
-      setSuccess("Tabela enviada e ativada. O Orçamentista IA já usará esta versão como base prioritária.");
-      setFilename(""); setContent("");
+      if (editingId) {
+        await api(`/pricing/reference-catalog/${editingId}`, { method: "PUT", body: JSON.stringify({ filename, content }) });
+        setSuccess("Tabela em uso atualizada. O Orçamentista IA já está consultando o novo conteúdo.");
+      } else {
+        await api("/pricing/reference-catalog", { method: "POST", body: JSON.stringify({ filename, content }) });
+        setSuccess("Tabela enviada e ativada. O Orçamentista IA já usará esta versão como base prioritária.");
+      }
+      clearEditor();
       await load();
     } catch (e) { setError(e instanceof Error ? e.message : "Falha ao salvar a tabela mestre"); }
     finally { setBusy(""); }
@@ -81,17 +103,22 @@ export function PricingReferenceCatalogPage() {
     try {
       await api(`/pricing/reference-catalog/${id}/activate`, { method: "POST" });
       setSuccess("Versão reativada com sucesso.");
+      clearEditor();
       await load();
     } catch (e) { setError(e instanceof Error ? e.message : "Falha ao ativar a versão"); }
     finally { setBusy(""); }
   };
 
-  const remove = async (id: string) => {
-    if (!window.confirm("Excluir esta versão antiga da tabela?")) return;
+  const remove = async (id: string, active = false) => {
+    const message = active
+      ? "Excluir a tabela que está EM USO? O Orçamentista IA ficará sem tabela mestre até outra versão ser ativada."
+      : "Excluir esta versão da tabela?";
+    if (!window.confirm(message)) return;
     setBusy(`delete-${id}`); setError(""); setSuccess("");
     try {
       await api(`/pricing/reference-catalog/${id}`, { method: "DELETE" });
-      setSuccess("Versão excluída.");
+      if (editingId === id) clearEditor();
+      setSuccess(active ? "Tabela em uso excluída. Envie ou ative outra versão para restabelecer a base da IA." : "Versão excluída.");
       await load();
     } catch (e) { setError(e instanceof Error ? e.message : "Falha ao excluir a versão"); }
     finally { setBusy(""); }
@@ -121,25 +148,33 @@ export function PricingReferenceCatalogPage() {
             <div><span>Atualizada</span><strong>{dateTimeBR(data.active.updated_at || data.active.created_at)}</strong></div>
           </div>
           <div className="pricing-reference-preview"><strong>Prévia da tabela ativa</strong><pre>{data.active.preview || "Prévia indisponível"}</pre></div>
+          <div className="pricing-reference-active-actions">
+            <button className="ghost-button" onClick={editActive}>Editar tabela em uso</button>
+            <button className="ghost-button pricing-reference-delete-button" disabled={busy === `delete-${data.active.id}`} onClick={() => void remove(data.active!.id, true)}>{busy === `delete-${data.active.id}` ? "Excluindo..." : "Excluir tabela em uso"}</button>
+          </div>
         </>}
       </section>
 
-      <section className="panel pricing-reference-upload">
-        <div className="pricing-section-title"><div><span className="eyebrow">NOVA VERSÃO</span><h2>Enviar tabela TXT</h2></div></div>
+      <section id="pricing-reference-editor" className="panel pricing-reference-upload">
+        <div className="pricing-section-title">
+          <div><span className="eyebrow">{editingId ? "EDITANDO TABELA ATIVA" : "NOVA VERSÃO"}</span><h2>{editingId ? "Alterar tabela em uso" : "Enviar tabela TXT"}</h2></div>
+          {editingId && <Badge tone="warning">Modo edição</Badge>}
+        </div>
         <label className="pricing-reference-file">
-          <span>Arquivo .txt</span>
+          <span>{editingId ? "Substituir por outro arquivo .txt (opcional)" : "Arquivo .txt"}</span>
           <input type="file" accept=".txt,text/plain" onChange={(event) => void pickFile(event.target.files?.[0])} />
         </label>
         <div className="pricing-reference-file-status">
           <strong>{filename || "Nenhum arquivo selecionado"}</strong>
           <span>{stats.lines.toLocaleString("pt-BR")} linhas · {stats.chars.toLocaleString("pt-BR")} caracteres</span>
         </div>
-        <label>Conteúdo para conferência
-          <textarea rows={12} value={content} onChange={(event) => setContent(event.target.value)} placeholder="Selecione um TXT ou cole/ajuste aqui a tabela antes de ativar." />
+        <label>Conteúdo para conferência e edição
+          <textarea rows={12} value={content} onChange={(event) => setContent(event.target.value)} placeholder="Selecione um TXT ou cole/ajuste aqui a tabela antes de salvar." />
         </label>
         <div className="pricing-action-row">
-          <button className="primary-button" disabled={busy === "save" || content.trim().length < 20} onClick={save}>{busy === "save" ? "Ativando..." : "Salvar e ativar tabela"}</button>
-          <small>A versão anterior permanece no histórico e pode ser reativada.</small>
+          <button className="primary-button" disabled={busy === "save" || content.trim().length < 20} onClick={save}>{busy === "save" ? "Salvando..." : editingId ? "Salvar alterações" : "Salvar e ativar tabela"}</button>
+          {editingId && <button className="ghost-button" disabled={busy === "save"} onClick={clearEditor}>Cancelar edição</button>}
+          <small>{editingId ? "As alterações entram em uso imediatamente após salvar." : "A versão anterior permanece no histórico e pode ser reativada."}</small>
         </div>
       </section>
     </div>
@@ -162,9 +197,12 @@ export function PricingReferenceCatalogPage() {
         <td>{Number(row.line_count || 0).toLocaleString("pt-BR")}</td>
         <td>{Number(row.content_chars || 0).toLocaleString("pt-BR")}</td>
         <td>{row.created_by_name || "Usuário MKNG"}</td>
-        <td>{dateTimeBR(row.created_at)}</td>
+        <td>{dateTimeBR(row.updated_at || row.created_at)}</td>
         <td><Badge tone={row.active ? "success" : "neutral"}>{row.active ? "Em uso" : "Histórico"}</Badge></td>
-        <td><div className="pricing-reference-actions">{!row.active && <button className="ghost-button compact-button" disabled={busy === `activate-${row.id}`} onClick={() => activate(row.id)}>Ativar</button>}{!row.active && <button className="icon-danger" disabled={busy === `delete-${row.id}`} onClick={() => remove(row.id)}>×</button>}</div></td>
+        <td><div className="pricing-reference-actions">
+          {row.active ? <button className="ghost-button compact-button" onClick={editActive}>Editar</button> : <button className="ghost-button compact-button" disabled={busy === `activate-${row.id}`} onClick={() => activate(row.id)}>Ativar</button>}
+          <button className="ghost-button compact-button pricing-reference-delete-button" disabled={busy === `delete-${row.id}`} onClick={() => void remove(row.id, Boolean(row.active))}>Excluir</button>
+        </div></td>
       </tr>)}</tbody></table></div>}
     </section>
   </>;
