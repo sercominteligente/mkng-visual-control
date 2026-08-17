@@ -30,6 +30,13 @@ jobs:
           test -n "$CLOUDFLARE_ACCOUNT_ID" || { echo "::error::CLOUDFLARE_ACCOUNT_ID ausente"; exit 1; }
       - name: Instalar dependências
         run: npm install --no-audit --no-fund
+      - name: Confirmar Secret OpenAI no Worker
+        shell: bash
+        run: |
+          set -o pipefail
+          npx wrangler secret list 2>&1 | tee secret-list.log
+          grep -q "OPENAI_API_KEY" secret-list.log || { echo "::error::OPENAI_API_KEY não encontrado no Worker Cloudflare"; exit 1; }
+          echo "OPENAI_API_KEY confirmado no Worker. Valor permanece oculto."
       - name: Build
         run: npm run build
       - name: Upload da versão de preview
@@ -37,11 +44,21 @@ jobs:
         run: |
           set -o pipefail
           npx wrangler versions upload --preview-alias v06-homolog --keep-vars --message "Homologação MKNG v0.6" 2>&1 | tee preview-upload.log
+      - name: Smoke test do preview
+        shell: bash
+        run: |
+          PREVIEW_URL=$(grep -o 'https://v06-homolog[^[:space:]]*' preview-upload.log | tail -n 1)
+          test -n "$PREVIEW_URL" || { echo "::error::URL de preview não encontrada"; exit 1; }
+          curl --retry 5 --retry-delay 2 --fail --silent --show-error "$PREVIEW_URL/" >/dev/null
+          echo "Preview respondeu HTTP com sucesso: $PREVIEW_URL"
       - name: Resumo
         if: always()
         shell: bash
         run: |
           echo "### MKNG v0.6 Preview" >> "$GITHUB_STEP_SUMMARY"
+          if [ -f secret-list.log ]; then
+            echo "- Secret OPENAI_API_KEY: verificado pelo Wrangler" >> "$GITHUB_STEP_SUMMARY"
+          fi
           if [ -f preview-upload.log ]; then
             echo '```' >> "$GITHUB_STEP_SUMMARY"
             tail -n 40 preview-upload.log >> "$GITHUB_STEP_SUMMARY"
