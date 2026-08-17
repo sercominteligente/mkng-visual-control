@@ -19,6 +19,7 @@ import { SettingsPage } from "./pages/SettingsPage";
 import { PricingIntelligencePage } from "./pages/PricingIntelligencePage";
 import { Loading } from "./components/UI";
 import { defaultBranding, type BrandingConfig } from "./lib/branding";
+import "./pricing.css";
 
 export function App() {
   const path = usePath();
