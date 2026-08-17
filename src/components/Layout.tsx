@@ -8,6 +8,7 @@ export type User = { id: string; name: string; email: string; role: string; stat
 const menu = [
   ["/dashboard", "Painel", "◫", "dashboard"],
   ["/orders", "Pedidos / OS", "▤", "orders"],
+  ["/pricing", "Orçamentos + IA", "◉", "pricing"],
   ["/production", "Produção", "◈", "production"],
   ["/materials", "Estoque", "▦", "stock"],
   ["/purchases", "Entradas / Compras", "↓", "purchases"],
@@ -23,11 +24,11 @@ const menu = [
 
 const rolePermissions: Record<string, string[]> = {
   super_admin: ["*"],
-  admin: ["dashboard", "orders", "production", "stock", "purchases", "customers", "suppliers", "finance", "reports", "users", "settings"],
-  manager: ["dashboard", "orders", "production", "stock", "purchases", "customers", "suppliers", "finance", "reports"],
+  admin: ["dashboard", "orders", "pricing", "production", "stock", "purchases", "customers", "suppliers", "finance", "reports", "users", "settings"],
+  manager: ["dashboard", "orders", "pricing", "production", "stock", "purchases", "customers", "suppliers", "finance", "reports"],
   production: ["dashboard", "orders", "production", "stock"],
   stock: ["dashboard", "stock", "purchases", "orders", "suppliers", "reports"],
-  finance: ["dashboard", "finance", "customers", "suppliers", "orders", "purchases", "reports"],
+  finance: ["dashboard", "pricing", "finance", "customers", "suppliers", "orders", "purchases", "reports"],
   viewer: ["dashboard", "orders", "production", "reports"],
 };
 
