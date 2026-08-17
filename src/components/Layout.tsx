@@ -9,6 +9,7 @@ const menu = [
   ["/dashboard", "Painel", "◫", "dashboard"],
   ["/orders", "Pedidos / OS", "▤", "orders"],
   ["/pricing", "Orçamentos + IA", "◉", "pricing"],
+  ["/pricing-base", "Tabela IA", "▧", "pricing"],
   ["/production", "Produção", "◈", "production"],
   ["/materials", "Estoque", "▦", "stock"],
   ["/purchases", "Entradas / Compras", "↓", "purchases"],
