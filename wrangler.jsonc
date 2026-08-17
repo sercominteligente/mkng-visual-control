@@ -1,8 +1,9 @@
 {
   "$schema": "./node_modules/wrangler/config-schema.json",
   "name": "mkng-visual-control",
-  "main": "src/worker.ts",
+  "main": "src/worker-v06.ts",
   "compatibility_date": "2026-08-03",
+  "preview_urls": true,
   "assets": {
     "directory": "./dist",
     "binding": "ASSETS",
@@ -27,7 +28,11 @@
     "APP_NAME": "MKNG Soluções - Setor de Comunicação Visual",
     "APP_URL": "https://mkng-visual-control.SUBDOMINIO.workers.dev",
     "APP_TIMEZONE": "America/Fortaleza",
-    "MAX_UPLOAD_MB": "25"
+    "MAX_UPLOAD_MB": "25",
+    "OPENAI_PRICING_MODEL": "gpt-5.6"
+  },
+  "secrets": {
+    "required": ["OPENAI_API_KEY"]
   },
   "observability": {
     "enabled": true

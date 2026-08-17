@@ -1,0 +1,29 @@
+name: Validate build
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+      - "feature/**"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install dependencies
+        run: npm install --no-audit --no-fund
+      - name: Homologação cálculo real MKNG
+        run: node scripts/homologacao-v06.mjs
+      - name: Validar migrations D1 localmente
+        run: npm run db:migrate:local
+      - name: Build frontend
+        run: npm run build
+      - name: Dry-run do Worker Cloudflare
+        run: npx wrangler deploy --dry-run --outdir .wrangler-dry-run

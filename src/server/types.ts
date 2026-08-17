@@ -10,6 +10,8 @@ export type AppBindings = {
   INITIAL_ADMIN_EMAIL?: string;
   INITIAL_ADMIN_PASSWORD?: string;
   SESSION_SECRET?: string;
+  OPENAI_API_KEY?: string;
+  OPENAI_PRICING_MODEL?: string;
 };
 
 export type SessionUser = {

@@ -16,8 +16,10 @@ import { FinancePage } from "./pages/FinancePage";
 import { ReportsPage } from "./pages/ReportsPage";
 import { UsersPage } from "./pages/UsersPage";
 import { SettingsPage } from "./pages/SettingsPage";
+import { PricingIntelligencePage } from "./pages/PricingIntelligencePage";
 import { Loading } from "./components/UI";
 import { defaultBranding, type BrandingConfig } from "./lib/branding";
+import "./pricing.css";
 
 export function App() {
   const path = usePath();
@@ -59,6 +61,7 @@ export function App() {
   let page: React.ReactNode;
   if (path === "/dashboard" || path === "/") page = <DashboardPage userName={user.name} />;
   else if (path === "/orders" || path.startsWith("/orders/")) page = <OrdersPage user={user} />;
+  else if (path === "/pricing") page = <PricingIntelligencePage />;
   else if (path === "/production") page = <ProductionPage user={user} />;
   else if (path === "/materials") page = <MaterialsPage user={user} />;
   else if (path === "/purchases") page = <PurchasesPage user={user} />;
