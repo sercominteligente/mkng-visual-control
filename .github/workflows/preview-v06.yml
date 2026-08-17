@@ -1,0 +1,49 @@
+name: Preview v0.6
+
+on:
+  push:
+    branches:
+      - feature/v0.6-pricing-intelligence
+    paths:
+      - "src/**"
+      - "wrangler.jsonc"
+      - "package.json"
+      - ".github/workflows/preview-v06.yml"
+
+jobs:
+  preview:
+    runs-on: ubuntu-latest
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Validar credenciais Cloudflare
+        shell: bash
+        run: |
+          test -n "$CLOUDFLARE_API_TOKEN" || { echo "::error::CLOUDFLARE_API_TOKEN ausente"; exit 1; }
+          test -n "$CLOUDFLARE_ACCOUNT_ID" || { echo "::error::CLOUDFLARE_ACCOUNT_ID ausente"; exit 1; }
+      - name: Instalar dependências
+        run: npm install --no-audit --no-fund
+      - name: Build
+        run: npm run build
+      - name: Upload da versão de preview
+        shell: bash
+        run: |
+          set -o pipefail
+          npx wrangler versions upload --preview-alias v06-homolog --keep-vars --message "Homologação MKNG v0.6" 2>&1 | tee preview-upload.log
+      - name: Resumo
+        if: always()
+        shell: bash
+        run: |
+          echo "### MKNG v0.6 Preview" >> "$GITHUB_STEP_SUMMARY"
+          if [ -f preview-upload.log ]; then
+            echo '```' >> "$GITHUB_STEP_SUMMARY"
+            tail -n 40 preview-upload.log >> "$GITHUB_STEP_SUMMARY"
+            echo '```' >> "$GITHUB_STEP_SUMMARY"
+          fi
