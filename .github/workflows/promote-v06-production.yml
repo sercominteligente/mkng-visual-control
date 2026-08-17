@@ -1,0 +1,91 @@
+name: Promote v0.6.0 production
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/promote-v06-production.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  promote:
+    runs-on: ubuntu-latest
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      VERSION_ID: 1b901f26-2cd8-430a-8e94-c8314af62360
+      RELEASE_COMMIT: db9e798ecc62d00dc3a4562c8d365c992188c3d8
+      WORKER_URL: https://mkng-visual-control.sercomvisual.workers.dev
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Validar credenciais
+        shell: bash
+        run: |
+          test -n "$CLOUDFLARE_API_TOKEN" || { echo "::error::CLOUDFLARE_API_TOKEN ausente"; exit 1; }
+          test -n "$CLOUDFLARE_ACCOUNT_ID" || { echo "::error::CLOUDFLARE_ACCOUNT_ID ausente"; exit 1; }
+
+      - name: Instalar dependências
+        run: npm install --no-audit --no-fund
+
+      - name: Promover versão homologada para 100%
+        shell: bash
+        run: |
+          set -o pipefail
+          npx wrangler versions deploy "${VERSION_ID}@100%" -y --message "MKNG Visual Control v0.6.0 homologada" 2>&1 | tee production-deploy.log
+
+      - name: Confirmar deployment ativo
+        shell: bash
+        run: |
+          set -o pipefail
+          npx wrangler deployments list 2>&1 | tee deployments.log
+          grep -q "$VERSION_ID" deployments.log || { echo "::error::Version ID homologado não aparece no deployment ativo"; exit 1; }
+
+      - name: Smoke test produção
+        shell: bash
+        run: |
+          HOME_CODE=$(curl --retry 5 --retry-delay 2 --silent --show-error -o /dev/null -w "%{http_code}" "$WORKER_URL/")
+          test "$HOME_CODE" = "200" || { echo "::error::Home retornou HTTP $HOME_CODE"; exit 1; }
+          API_CODE=$(curl --retry 3 --retry-delay 1 --silent --show-error -o /dev/null -w "%{http_code}" "$WORKER_URL/api/pricing/history")
+          case "$API_CODE" in
+            200|401|403) echo "Pricing API respondeu conforme esperado: HTTP $API_CODE" ;;
+            *) echo "::error::Pricing API retornou HTTP $API_CODE"; exit 1 ;;
+          esac
+          echo "Produção respondeu corretamente em $WORKER_URL"
+
+      - name: Criar tag estável v0.6.0
+        shell: bash
+        run: |
+          git config user.name "sercominteligente"
+          git config user.email "sercomvisual@gmail.com"
+          if git ls-remote --tags origin refs/tags/v0.6.0 | grep -q v0.6.0; then
+            echo "Tag v0.6.0 já existe. Nenhuma alteração feita."
+          else
+            git tag -a v0.6.0 "$RELEASE_COMMIT" -m "MKNG Visual Control v0.6.0 - Orçamentista IA, Insider e Analytics de Mercado"
+            git push origin v0.6.0
+          fi
+
+      - name: Resumo
+        if: always()
+        shell: bash
+        run: |
+          echo "### MKNG Visual Control v0.6.0" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Version ID homologado: $VERSION_ID" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Commit de release: $RELEASE_COMMIT" >> "$GITHUB_STEP_SUMMARY"
+          echo "- URL: $WORKER_URL" >> "$GITHUB_STEP_SUMMARY"
+          if [ -f production-deploy.log ]; then
+            echo '```' >> "$GITHUB_STEP_SUMMARY"
+            tail -n 30 production-deploy.log >> "$GITHUB_STEP_SUMMARY"
+            echo '```' >> "$GITHUB_STEP_SUMMARY"
+          fi
