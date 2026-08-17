@@ -1,0 +1,38 @@
+name: Prepare Cloudflare v0.6
+
+on:
+  push:
+    branches:
+      - "feature/v0.6-pricing-intelligence"
+    paths:
+      - ".github/ops/v06-migrate-trigger"
+
+jobs:
+  migrate-d1:
+    runs-on: ubuntu-latest
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Verificar credenciais Cloudflare
+        shell: bash
+        run: |
+          if [ -z "$CLOUDFLARE_API_TOKEN" ]; then
+            echo "::error::Secret CLOUDFLARE_API_TOKEN não configurado no GitHub Actions."
+            exit 1
+          fi
+          if [ -z "$CLOUDFLARE_ACCOUNT_ID" ]; then
+            echo "::error::Secret CLOUDFLARE_ACCOUNT_ID não configurado no GitHub Actions."
+            exit 1
+          fi
+          echo "Credenciais Cloudflare presentes. Valores permanecem mascarados."
+      - name: Install dependencies
+        run: npm install --no-audit --no-fund
+      - name: Aplicar migrations D1 remotas
+        run: npm run db:migrate:remote
