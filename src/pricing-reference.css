@@ -64,6 +64,22 @@
   font: 12px/1.55 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 }
 
+.pricing-reference-active-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 14px;
+}
+
+.pricing-reference-delete-button {
+  color: #b42318 !important;
+  border-color: rgba(180, 35, 24, .28) !important;
+}
+
+.pricing-reference-delete-button:hover:not(:disabled) {
+  background: rgba(180, 35, 24, .08) !important;
+}
+
 .pricing-reference-upload label {
   display: flex;
   flex-direction: column;
@@ -148,5 +164,11 @@
   .pricing-reference-file-status {
     align-items: flex-start;
     flex-direction: column;
+  }
+  .pricing-reference-active-actions {
+    flex-direction: column;
+  }
+  .pricing-reference-active-actions button {
+    width: 100%;
   }
 }
