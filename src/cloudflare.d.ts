@@ -18,3 +18,4 @@ interface R2Bucket {
   delete(key: string): Promise<void>;
 }
 interface Fetcher { fetch(input: Request | string, init?: RequestInit): Promise<Response>; }
+interface Body { json<T = any>(): Promise<T>; }
