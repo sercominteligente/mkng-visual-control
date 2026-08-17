@@ -17,6 +17,7 @@ import { ReportsPage } from "./pages/ReportsPage";
 import { UsersPage } from "./pages/UsersPage";
 import { SettingsPage } from "./pages/SettingsPage";
 import { PricingIntelligencePage } from "./pages/PricingIntelligencePage";
+import { PricingReferenceCatalogPage } from "./pages/PricingReferenceCatalogPage";
 import { Loading } from "./components/UI";
 import { defaultBranding, type BrandingConfig } from "./lib/branding";
 import "./pricing.css";
@@ -62,6 +63,7 @@ export function App() {
   if (path === "/dashboard" || path === "/") page = <DashboardPage userName={user.name} />;
   else if (path === "/orders" || path.startsWith("/orders/")) page = <OrdersPage user={user} />;
   else if (path === "/pricing") page = <PricingIntelligencePage />;
+  else if (path === "/pricing-base") page = <PricingReferenceCatalogPage />;
   else if (path === "/production") page = <ProductionPage user={user} />;
   else if (path === "/materials") page = <MaterialsPage user={user} />;
   else if (path === "/purchases") page = <PurchasesPage user={user} />;
