@@ -104,13 +104,27 @@ function selectCatalogContext(content: string, description: string): string {
 
 async function loadActiveCatalog(env: AppEnv["Bindings"]): Promise<any | null> {
   return env.DB.prepare(
-    `SELECT c.id,c.filename,c.content,c.content_chars,c.line_count,c.created_at,c.updated_at,u.name AS created_by_name
+    `SELECT c.id,c.filename,c.content,c.content_chars,c.line_count,c.active,c.created_at,c.updated_at,u.name AS created_by_name
        FROM pricing_reference_catalogs c
        LEFT JOIN users u ON u.id=c.created_by
       WHERE c.active=1
       ORDER BY c.updated_at DESC,c.created_at DESC
       LIMIT 1`,
   ).first<any>();
+}
+
+function cleanCatalogPayload(data: any) {
+  const filename = String(data.filename || "tabela-precos.txt").trim();
+  const content = String(data.content || "").replace(/\u0000/g, "").trim();
+  const lineCount = content.split(/\r?\n/).filter((line) => line.trim()).length;
+  return { filename, content, lineCount };
+}
+
+function validateCatalog(filename: string, content: string): string | null {
+  if (!filename.toLowerCase().endsWith(".txt")) return "Envie um arquivo .txt";
+  if (content.length < 20) return "A tabela TXT está vazia ou pequena demais";
+  if (content.length > MAX_CATALOG_CHARS) return `Arquivo muito grande. Limite: ${MAX_CATALOG_CHARS.toLocaleString("pt-BR")} caracteres`;
+  return null;
 }
 
 function assistantPrompt(description: string, region: string, costPerM2: number, markupPct: number, catalog: any | null): string {
@@ -142,14 +156,11 @@ export function registerPricingReferenceRoutes(app: Hono<AppEnv>) {
   app.post("/api/pricing/reference-catalog", async (c) => {
     const denied = requirePricingUser(c); if (denied) return denied;
     const data = await c.req.json<any>();
-    const filename = String(data.filename || "tabela-precos.txt").trim();
-    const content = String(data.content || "").replace(/\u0000/g, "").trim();
-    if (!filename.toLowerCase().endsWith(".txt")) return c.json({ error: "Envie um arquivo .txt" }, 400);
-    if (content.length < 20) return c.json({ error: "A tabela TXT está vazia ou pequena demais" }, 400);
-    if (content.length > MAX_CATALOG_CHARS) return c.json({ error: `Arquivo muito grande. Limite: ${MAX_CATALOG_CHARS.toLocaleString("pt-BR")} caracteres` }, 413);
+    const { filename, content, lineCount } = cleanCatalogPayload(data);
+    const validationError = validateCatalog(filename, content);
+    if (validationError) return c.json({ error: validationError }, content.length > MAX_CATALOG_CHARS ? 413 : 400);
     const id = uid();
     const now = isoNow();
-    const lineCount = content.split(/\r?\n/).filter((line) => line.trim()).length;
     await c.env.DB.batch([
       c.env.DB.prepare("UPDATE pricing_reference_catalogs SET active=0,updated_at=? WHERE active=1").bind(now),
       c.env.DB.prepare(
@@ -157,6 +168,21 @@ export function registerPricingReferenceRoutes(app: Hono<AppEnv>) {
       ).bind(id, filename, content, content.length, lineCount, c.get("user").id, now, now),
     ]);
     return c.json({ id, filename, content_chars: content.length, line_count: lineCount, active: true, created_at: now });
+  });
+
+  app.put("/api/pricing/reference-catalog/:id", async (c) => {
+    const denied = requirePricingUser(c); if (denied) return denied;
+    const row = await c.env.DB.prepare("SELECT id,active FROM pricing_reference_catalogs WHERE id=?").bind(c.req.param("id")).first<any>();
+    if (!row) return c.json({ error: "Versão da tabela não encontrada" }, 404);
+    const data = await c.req.json<any>();
+    const { filename, content, lineCount } = cleanCatalogPayload(data);
+    const validationError = validateCatalog(filename, content);
+    if (validationError) return c.json({ error: validationError }, content.length > MAX_CATALOG_CHARS ? 413 : 400);
+    const now = isoNow();
+    await c.env.DB.prepare(
+      "UPDATE pricing_reference_catalogs SET filename=?,content=?,content_chars=?,line_count=?,updated_at=? WHERE id=?",
+    ).bind(filename, content, content.length, lineCount, now, row.id).run();
+    return c.json({ id: row.id, filename, content_chars: content.length, line_count: lineCount, active: Number(row.active) === 1, updated_at: now });
   });
 
   app.post("/api/pricing/reference-catalog/:id/activate", async (c) => {
@@ -175,9 +201,8 @@ export function registerPricingReferenceRoutes(app: Hono<AppEnv>) {
     const denied = requirePricingUser(c); if (denied) return denied;
     const row = await c.env.DB.prepare("SELECT id,active FROM pricing_reference_catalogs WHERE id=?").bind(c.req.param("id")).first<any>();
     if (!row) return c.json({ error: "Versão da tabela não encontrada" }, 404);
-    if (Number(row.active) === 1) return c.json({ error: "Ative outra versão antes de excluir a tabela atualmente em uso" }, 409);
     await c.env.DB.prepare("DELETE FROM pricing_reference_catalogs WHERE id=?").bind(row.id).run();
-    return c.json({ ok: true });
+    return c.json({ ok: true, removed_active: Number(row.active) === 1 });
   });
 
   // Registrada antes das rotas legadas de pricing para substituir apenas o Orçamentista IA.
